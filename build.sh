@@ -21,7 +21,7 @@ if [ -f "$STALE" ] && [ -f "${STALE%/*}/bridging.modulemap" ]; then
   EXTRA=(-vfsoverlay build/clt-fix.yaml -Xcc -ivfsoverlay -Xcc build/clt-fix.yaml)
 fi
 
-swiftc -O -swift-version 5 "${EXTRA[@]}" \
+swiftc -O -swift-version 5 ${EXTRA[@]+"${EXTRA[@]}"} \
   -target "$(uname -m)-apple-macos14.0" \
   -framework AppKit -framework Metal -framework MetalKit -framework QuartzCore \
   -framework ServiceManagement -framework ApplicationServices \

@@ -11,7 +11,7 @@ if [ -f "$STALE" ] && [ -f "${STALE%/*}/bridging.modulemap" ]; then
   EXTRA=(-vfsoverlay build/clt-fix.yaml -Xcc -ivfsoverlay -Xcc build/clt-fix.yaml)
 fi
 
-swiftc -swift-version 5 "${EXTRA[@]}" -framework AppKit scripts/icon/main.swift -o build/make-icon
+swiftc -swift-version 5 ${EXTRA[@]+"${EXTRA[@]}"} -framework AppKit scripts/icon/main.swift -o build/make-icon
 ./build/make-icon build/icon-1024.png
 
 SET=build/AppIcon.iconset
