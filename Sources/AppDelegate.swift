@@ -87,7 +87,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         world.step(dt: Float(dt))
         if world.needsRedraw {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             for o in overlays { o.draw() }
+            CATransaction.commit()
         }
     }
 
@@ -205,7 +208,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(submenu("Мышь", mouse))
         menu.addItem(.separator())
 
-        menu.addItem(item("Снег поверх окон", #selector(toggleOverWindows), on: s.overWindows))
         menu.addItem(item("Снег ложится на окна", #selector(toggleAccumulate), on: s.accumulate))
         if AXIsProcessTrusted() {
             let dock = item("Снег ложится на Dock", #selector(noop), on: true)
@@ -245,11 +247,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func setTool(_ sender: NSMenuItem) {
         settings.tool = Tool(rawValue: sender.tag) ?? .none
         applyTool()
-    }
-    @objc private func toggleOverWindows() {
-        settings.overWindows.toggle()
-        for o in overlays { o.setLayer(overWindows: settings.overWindows) }
-        world.rebuildSurfaces()
     }
     @objc private func toggleAccumulate() {
         settings.accumulate.toggle()

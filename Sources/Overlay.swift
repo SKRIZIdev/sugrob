@@ -61,7 +61,9 @@ final class Overlay {
         dockWindow.contentView = dockView
 
         setRenderScale(eco: world.eco)
-        setLayer(overWindows: Settings.shared.overWindows)
+        // Снег идёт на рабочем столе: сразу над обоями и значками, под виджетами (+2), окнами и Dock.
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
+        window.orderFrontRegardless()
         dockWindow.orderFrontRegardless()
     }
 
@@ -89,17 +91,11 @@ final class Overlay {
         v.wantsLayer = true
         v.layer?.isOpaque = false
         v.layer?.backgroundColor = .clear
+        // Кадры обоих слоёв (рабочий стол и Dock) уходят на экран одной транзакцией Core Animation:
+        // когда снег переходит со слоя на слой, не бывает кадра, где его нет ни там, ни там.
+        (v.layer as? CAMetalLayer)?.presentsWithTransaction = true
         v.world = world
         return v
-    }
-
-    /// Поверх окон: над окнами и Dock (20), под строкой меню (24) — значок в строке меню всегда нажимается.
-    /// За окнами: сразу над обоями и значками рабочего стола, под виджетами (+2), окнами и Dock.
-    func setLayer(overWindows: Bool) {
-        window.level = overWindows
-            ? NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.dockWindow)) + 3)
-            : NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
-        window.orderFrontRegardless()
     }
 
     /// Снег мягкий — полная Retina ему не нужна. 1.5x на глаз не отличить от 2x, а кадр

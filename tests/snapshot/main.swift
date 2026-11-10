@@ -15,7 +15,6 @@ Settings.shared.intensity = .steady
 Settings.shared.wind = .calm
 Settings.shared.paused = false
 Settings.shared.accumulate = true
-Settings.shared.overWindows = false     // по умолчанию снег идёт за окнами
 
 let world = SnowWorld()
 world.depositBoost = 6
@@ -47,13 +46,7 @@ func capHeight(_ id: CGWindowID, _ x: Float) -> Float {
     return s.map.height(at: x - s.originX)
 }
 let segs10 = world.surfaces.filter { $0.window == 10 }.map { "\(Int($0.a))…\(Int($0.b))" }
-check(segs10 == ["180…520"], "за окнами: над кромкой окна 10 справа висит окно 11 — снег только слева: \(segs10)")
-Settings.shared.overWindows = true
-world.rebuildSurfaces()
-let segs10over = world.surfaces.filter { $0.window == 10 }.map { "\(Int($0.a))…\(Int($0.b))" }
-check(segs10over == ["180…740"], "поверх окон: кромка окна 10 открыта целиком: \(segs10over)")
-Settings.shared.overWindows = false
-world.rebuildSurfaces()
+check(segs10 == ["180…520"], "над кромкой окна 10 справа висит окно 11 — снег только слева: \(segs10)")
 check(capHeight(11, 840) > 3, "на окне 11 лежит снег: \(capHeight(11, 840)) pt")
 check(capHeight(13, 145) > 1, "на виджете 13 лежит снег: \(capHeight(13, 145)) pt")
 let groundMid = world.areas[0].ground.height(at: 735)
@@ -109,17 +102,11 @@ func rect(_ t: inout [TriVertex], _ r: CGRect, _ top: SIMD4<Float>, _ bottom: SI
 func render(_ name: String, lightWindows: Bool) {
     var bg: [TriVertex] = [], front: [TriVertex] = []
     rect(&bg, CGRect(x: 0, y: 0, width: W, height: H), SIMD4(0.10, 0.16, 0.27, 1), SIMD4(0.20, 0.30, 0.38, 1))
-    let behind = !Settings.shared.overWindows
     for w in wins.reversed() {
         let body: SIMD4<Float> = lightWindows ? SIMD4(1, 1, 1, 1) : SIMD4(0.16, 0.17, 0.19, 1)
         let bar: SIMD4<Float> = lightWindows ? SIMD4(0.93, 0.93, 0.94, 1) : SIMD4(0.22, 0.23, 0.25, 1)
-        if behind {
-            rect(&front, w.frame, body, body)
-            rect(&front, CGRect(x: w.frame.minX, y: w.frame.minY, width: w.frame.width, height: 28), bar, bar)
-        } else {
-            rect(&bg, w.frame, body, body)
-            rect(&bg, CGRect(x: w.frame.minX, y: w.frame.minY, width: w.frame.width, height: 28), bar, bar)
-        }
+        rect(&front, w.frame, body, body)          // снег идёт за окнами
+        rect(&front, CGRect(x: w.frame.minX, y: w.frame.minY, width: w.frame.width, height: 28), bar, bar)
     }
     var points: [PointVertex] = [], tris: [TriVertex] = []
     let r = world.buildFrame(for: world.areas[0], points: &points, tris: &tris)
@@ -222,12 +209,24 @@ func groundUnderDock() -> Float {
 dockStep(956, frames: 3)
 let lying = groundUnderDock()
 let flakesBeforeDock = world.areas[0].flakes.count
-for y in dockUp { dockStep(y) }
+// SNAP_FILM=1 — покадровая лента выезда/прятания Dock для глаз.
+let film = ProcessInfo.processInfo.environment["SNAP_FILM"] != nil
+for (k, y) in dockUp.enumerated() {
+    dockStep(y)
+    if film && k % 3 == 0 { render(String(format: "film-up-%02d", k), lightWindows: false) }
+}
+if film { for k in 0..<6 { dockStep(863, frames: 3); render(String(format: "film-top-%02d", k), lightWindows: false) } }
 let onDock = world.dockState?.snow ?? 0
 check(world.dockShown && world.dockState?.frame.minY == 863, "Dock выехал: верх на \(world.dockState?.frame.minY ?? -1)")
 check(lying > 1000 && groundUnderDock() < lying * 0.05, "сугроб над Dock подхвачен: у кромки было \(Int(lying)), осталось \(Int(groundUnderDock())) pt²")
 check(onDock > lying * 0.6 && onDock < lying * 1.0, "на крыше Dock \(Int(onDock)) pt² из \(Int(lying)) — часть раскрошилась")
 check(world.areas[0].flakes.count > flakesBeforeDock, "на подъёме снег крошится: снежинок \(flakesBeforeDock) → \(world.areas[0].flakes.count)")
+let frontFlakes = world.areas[0].flakes.filter { $0.front }.count
+check(frontFlakes >= 8, "снежная пыль и крошки с Dock летят перед окнами: \(frontFlakes)")
+if let d = world.dockState, let s = world.surfaces.first(where: { $0.isDock }) {
+    let edge = s.map.height(at: 1), mid = s.map.height(at: s.map.width / 2)
+    check(edge < 1.5 && mid > 4, "края снега на Dock скруглены: у края \(edge) pt, в середине \(mid) pt (Dock \(Int(d.frame.minX))…\(Int(d.frame.maxX)))")
+}
 let man = world.balls
 check(man.count == 3 && man.allSatisfy { $0.onDock && $0.resting && $0.y + $0.r < 875 },
       "снеговик поднялся вместе с Dock: низы комьев \(man.map { Int($0.y + $0.r) }), на Dock: \(man.map { $0.onDock })")
@@ -235,8 +234,15 @@ run(0.15)
 render("4-dock-up", lightWindows: false)
 dockStep(863, frames: 60)
 let settled = world.dockState?.snow ?? 0
-for y in dockUp.reversed() { dockStep(y) }
-dockStep(956, frames: 2)
+for (k, y) in dockUp.reversed().enumerated() {
+    dockStep(y)
+    if film && k % 3 == 0 { render(String(format: "film-down-%02d", k), lightWindows: false) }
+}
+dockStep(956, frames: 1)
+if film { for k in 0..<4 { render(String(format: "film-ghost-%02d", k), lightWindows: false); dockStep(956, frames: 6) } }
+check(world.dockGhostAlive, "Dock спрятался — снег с него тает на его слое, а не пропадает")
+dockStep(956, frames: 40)
+check(!world.dockGhostAlive, "через полсекунды тающая копия исчезла")
 let back = groundUnderDock()
 check(!world.dockShown && (world.dockState?.snow ?? 1) < 0.01, "Dock спрятался, на нём пусто")
 check(back > settled * 0.75, "снег с Dock лёг обратно у кромки: \(Int(back)) pt² (на Dock было \(Int(settled)))")

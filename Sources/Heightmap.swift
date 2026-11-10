@@ -5,6 +5,9 @@ import Foundation
 final class Heightmap {
     let cell: Float
     let maxH: Float
+    /// На этом расстоянии от концов предел высоты сходит на нет по дуге — сугроб на скруглённых
+    /// углах окна или Dock не обрывается стенкой и не свисает.
+    let endRadius: Float
     private(set) var h: [Float]
     /// Предел высоты по ячейкам: волнистый, чтобы полный сугроб не выглядел ровной плитой.
     private var limit: [Float] = []
@@ -12,9 +15,10 @@ final class Heightmap {
     /// Профиль менялся и ещё не успокоился — нужен relax и перерисовка.
     private(set) var dirty = false
 
-    init(width: Float, maxH: Float, cell: Float = 2.5) {
+    init(width: Float, maxH: Float, cell: Float = 2.5, endRadius: Float = 0) {
         self.cell = cell
         self.maxH = maxH
+        self.endRadius = endRadius
         h = Array(repeating: 0, count: Heightmap.count(width, cell))
         makeLimit()
     }
@@ -25,11 +29,17 @@ final class Heightmap {
 
     private func makeLimit() {
         var l = [Float](repeating: maxH, count: h.count)
+        let last = Float(h.count - 1) * cell
         for i in l.indices {
             let x = Float(i) * cell
             let slow: Float = sin(x / 37 + phase.0)
             let fast: Float = sin(x / 13 + phase.1)
             l[i] = maxH * (0.84 + 0.08 * (slow + fast))      // ±16% вокруг 84% от потолка
+            let d = min(x, last - x)
+            if endRadius > 0, d < endRadius {                // четверть окружности к концам
+                let u = 1 - d / endRadius
+                l[i] *= (1 - u * u).squareRoot()
+            }
         }
         limit = l
     }
@@ -39,13 +49,28 @@ final class Heightmap {
 
     /// Переложить снег из `other` сюда: ячейка j забирает снег из точки `j·cell + offset` профиля
     /// `other` (в его координатах), а там снег обнуляется. Сверх предела высоты — теряется.
-    func absorb(_ other: Heightmap, offset: Float) {
+    /// Возвращает площадь, не поместившуюся у левого и правого конца (она осыпается).
+    @discardableResult
+    func absorb(_ other: Heightmap, offset: Float) -> (left: Float, right: Float) {
+        var l: Float = 0, r: Float = 0
         for j in h.indices {
             let v = other.height(at: Float(j) * cell + offset)
-            if v > 0 { h[j] = min(limit[j], h[j] + v) }
+            guard v > 0 else { continue }
+            let sum = h[j] + v
+            h[j] = min(limit[j], sum)
+            let extra = (sum - h[j]) * cell
+            if j < h.count / 2 { l += extra } else { r += extra }
         }
         other.zero(from: offset, to: offset + width)
         dirty = true
+        return (l, r)
+    }
+
+    func copy() -> Heightmap {
+        let m = Heightmap(width: width, maxH: maxH, cell: cell, endRadius: endRadius)
+        m.h = h
+        m.limit = limit
+        return m
     }
 
     /// Обнулить снег на отрезке [a, b] (в координатах профиля).
@@ -131,6 +156,14 @@ final class Heightmap {
             i -= 1
         }
         var l: Float = 0, r: Float = 0
+        if endRadius > 0 {
+            for i in h.indices where h[i] > limit[i] + eps {
+                let extra = (h[i] - limit[i]) * cell
+                h[i] = limit[i]
+                if i < n / 2 { l += extra } else { r += extra }
+                moved = true
+            }
+        }
         if edges {
             if h[0] > lim + eps { l = (h[0] - lim) * cell; h[0] = lim; moved = true }
             if h[n - 1] > lim + eps { r = (h[n - 1] - lim) * cell; h[n - 1] = lim; moved = true }

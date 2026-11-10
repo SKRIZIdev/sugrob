@@ -204,9 +204,11 @@ final class ScreenRenderer: NSObject, MTKViewDelegate {
             enc.drawPrimitives(type: .point, vertexStart: r.balls, vertexCount: points.count - r.balls)
         }
         enc.endEncoding()
-        cmd.present(drawable)
         let sem = inflight
         cmd.addCompletedHandler { _ in sem.signal() }
         cmd.commit()
+        // presentsWithTransaction: кадр покажется вместе с текущей транзакцией Core Animation.
+        cmd.waitUntilScheduled()
+        drawable.present()
     }
 }
