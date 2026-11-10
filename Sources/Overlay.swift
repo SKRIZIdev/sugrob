@@ -42,8 +42,6 @@ final class Overlay {
         window.backgroundColor = .clear
         window.hasShadow = false
         window.ignoresMouseEvents = true
-        // Над окнами и Dock (20), под строкой меню (24): значок в строке меню всегда нажимается.
-        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.dockWindow)) + 3)
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
         window.isReleasedWhenClosed = false
         window.animationBehavior = .none
@@ -63,6 +61,16 @@ final class Overlay {
         view.world = world
         window.contentView = view
         setRenderScale(eco: world.eco)
+        setLayer(overWindows: Settings.shared.overWindows)
+        window.orderFrontRegardless()
+    }
+
+    /// Поверх окон: над окнами и Dock (20), под строкой меню (24) — значок в строке меню всегда нажимается.
+    /// За окнами: сразу над обоями и значками рабочего стола, под виджетами (+2), окнами и Dock.
+    func setLayer(overWindows: Bool) {
+        window.level = overWindows
+            ? NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.dockWindow)) + 3)
+            : NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
         window.orderFrontRegardless()
     }
 

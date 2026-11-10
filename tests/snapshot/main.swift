@@ -15,6 +15,7 @@ Settings.shared.intensity = .steady
 Settings.shared.wind = .calm
 Settings.shared.paused = false
 Settings.shared.accumulate = true
+Settings.shared.overWindows = false     // по умолчанию снег идёт за окнами
 
 let world = SnowWorld()
 world.depositBoost = 6
@@ -45,6 +46,14 @@ func capHeight(_ id: CGWindowID, _ x: Float) -> Float {
     guard let s = world.surfaces.first(where: { $0.window == id && x >= $0.a && x <= $0.b }) else { return -1 }
     return s.map.height(at: x - s.originX)
 }
+let segs10 = world.surfaces.filter { $0.window == 10 }.map { "\(Int($0.a))…\(Int($0.b))" }
+check(segs10 == ["180…520"], "за окнами: над кромкой окна 10 справа висит окно 11 — снег только слева: \(segs10)")
+Settings.shared.overWindows = true
+world.rebuildSurfaces()
+let segs10over = world.surfaces.filter { $0.window == 10 }.map { "\(Int($0.a))…\(Int($0.b))" }
+check(segs10over == ["180…740"], "поверх окон: кромка окна 10 открыта целиком: \(segs10over)")
+Settings.shared.overWindows = false
+world.rebuildSurfaces()
 check(capHeight(11, 840) > 3, "на окне 11 лежит снег: \(capHeight(11, 840)) pt")
 check(capHeight(13, 145) > 1, "на виджете 13 лежит снег: \(capHeight(13, 145)) pt")
 let groundMid = world.areas[0].ground.height(at: 735)
@@ -98,17 +107,23 @@ func rect(_ t: inout [TriVertex], _ r: CGRect, _ top: SIMD4<Float>, _ bottom: SI
 }
 
 func render(_ name: String, lightWindows: Bool) {
-    var bg: [TriVertex] = []
+    var bg: [TriVertex] = [], front: [TriVertex] = []
     rect(&bg, CGRect(x: 0, y: 0, width: W, height: H), SIMD4(0.10, 0.16, 0.27, 1), SIMD4(0.20, 0.30, 0.38, 1))
+    let behind = !Settings.shared.overWindows
     for w in wins.reversed() {
         let body: SIMD4<Float> = lightWindows ? SIMD4(1, 1, 1, 1) : SIMD4(0.16, 0.17, 0.19, 1)
         let bar: SIMD4<Float> = lightWindows ? SIMD4(0.93, 0.93, 0.94, 1) : SIMD4(0.22, 0.23, 0.25, 1)
-        rect(&bg, w.frame, body, body)
-        rect(&bg, CGRect(x: w.frame.minX, y: w.frame.minY, width: w.frame.width, height: 28), bar, bar)
+        if behind {
+            rect(&front, w.frame, body, body)
+            rect(&front, CGRect(x: w.frame.minX, y: w.frame.minY, width: w.frame.width, height: 28), bar, bar)
+        } else {
+            rect(&bg, w.frame, body, body)
+            rect(&bg, CGRect(x: w.frame.minX, y: w.frame.minY, width: w.frame.width, height: 28), bar, bar)
+        }
     }
     var points: [PointVertex] = [], tris: [TriVertex] = []
     let r = world.buildFrame(for: world.areas[0], points: &points, tris: &tris)
-    let all = bg + tris
+    let all = bg + tris + front
     let tb = gpu.device.makeBuffer(bytes: all, length: all.count * MemoryLayout<TriVertex>.stride)!
     let pb = gpu.device.makeBuffer(bytes: points.isEmpty ? [PointVertex(pos: .zero, size: 0, alpha: 0, color: .zero)] : points,
                                    length: max(points.count, 1) * MemoryLayout<PointVertex>.stride)!
@@ -135,6 +150,10 @@ func render(_ name: String, lightWindows: Bool) {
     if points.count > r.balls {
         enc.setRenderPipelineState(gpu.pointPipeline); enc.setVertexBuffer(pb, offset: 0, index: 0)
         enc.drawPrimitives(type: .point, vertexStart: r.balls, vertexCount: points.count - r.balls)
+    }
+    if !front.isEmpty {
+        enc.setRenderPipelineState(gpu.triPipeline); enc.setVertexBuffer(tb, offset: 0, index: 0)
+        enc.drawPrimitives(type: .triangle, vertexStart: off + tris.count, vertexCount: front.count)
     }
     enc.endEncoding()
     cmd.commit()

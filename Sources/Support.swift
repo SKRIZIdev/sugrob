@@ -117,7 +117,7 @@ final class Settings {
     private init() {
         d.register(defaults: [
             "intensity": Intensity.steady.rawValue, "wind": 0, "gusts": true,
-            "accumulate": true, "cursorPush": true, "paused": false,
+            "accumulate": true, "cursorPush": true, "paused": false, "overWindows": false,
         ])
     }
 
@@ -144,6 +144,11 @@ final class Settings {
     var paused: Bool {
         get { d.bool(forKey: "paused") }
         set { d.set(newValue, forKey: "paused") }
+    }
+    /// false — снег идёт на рабочем столе, за окнами; true — поверх всех окон.
+    var overWindows: Bool {
+        get { d.bool(forKey: "overWindows") }
+        set { d.set(newValue, forKey: "overWindows") }
     }
     /// Экономный режим вручную: 30 кадров, вдвое меньше снега, кадр в 1x.
     var eco: Bool {

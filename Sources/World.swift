@@ -165,25 +165,38 @@ final class SnowWorld {
         changed = true
     }
 
-    /// Видимые участки кромок: часть кромки, закрытая окном спереди (или Dock), снег не принимает.
+    /// Видимые участки кромок — только на них ложится снег.
+    /// Поверх окон: кромку прячут окна спереди и Dock.
+    /// За окнами: слой снега лежит под всеми окнами, поэтому шапку над кромкой прячет любое окно,
+    /// виджет или Dock, занявшие полосу над ней, — снег виден только на открытом рабочем столе.
     func rebuildSurfaces() {
+        let behind = !settings.overWindows
         var list: [Surface] = []
-        var fronts: [CGRect] = []
-        if let d = dock, d.visible {
-            list.append(Surface(a: Float(d.frame.minX), b: Float(d.frame.maxX), y: Float(d.frame.minY),
-                                originX: Float(d.frame.minX), map: d.map, window: nil))
-            fronts.append(d.frame)
+        var wins: [(CGWindowID, CGRect)] = []
+        for id in order { if let c = caps[id], c.visible { wins.append((id, c.frame)) } }
+        let dockFrame: CGRect? = dock?.visible == true ? dock?.frame : nil
+
+        func segments(_ f: CGRect, hiddenBy occluders: [CGRect]) -> [(CGFloat, CGFloat)] {
+            var segs: [(CGFloat, CGFloat)] = [(f.minX, f.maxX)]
+            for c in occluders where c.minY <= f.minY + 1 && c.maxY >= f.minY - 20 {
+                segs = SnowWorld.subtract(segs, c.minX, c.maxX)
+                if segs.isEmpty { break }
+            }
+            return segs.filter { $0.1 - $0.0 > 3 }
+        }
+
+        if let d = dock, let df = dockFrame {
+            for s in segments(df, hiddenBy: behind ? wins.map { $0.1 } : []) {
+                list.append(Surface(a: Float(s.0), b: Float(s.1), y: Float(df.minY),
+                                    originX: Float(df.minX), map: d.map, window: nil))
+            }
         }
         if settings.accumulate {
-            for id in order {
-                guard let cap = caps[id], cap.visible else { continue }
-                let f = cap.frame
-                var segs: [(CGFloat, CGFloat)] = [(f.minX, f.maxX)]
-                for c in fronts where c.minY <= f.minY + 1 && c.maxY >= f.minY - 20 {
-                    segs = SnowWorld.subtract(segs, c.minX, c.maxX)
-                    if segs.isEmpty { break }
-                }
-                for s in segs where s.1 - s.0 > 3 {
+            var fronts: [CGRect] = dockFrame.map { [$0] } ?? []
+            for (id, f) in wins {
+                guard let cap = caps[id] else { continue }
+                let occluders = behind ? (dockFrame.map { [$0] } ?? []) + wins.filter { $0.0 != id }.map { $0.1 } : fronts
+                for s in segments(f, hiddenBy: occluders) {
                     list.append(Surface(a: Float(s.0), b: Float(s.1), y: Float(f.minY),
                                         originX: Float(f.minX), map: cap.map, window: id))
                 }
