@@ -26,6 +26,16 @@ final class WindowTracker {
         out.reserveCapacity(48)
         var finder = 0
         defer { finderWindows = finder }
+        // Stage Manager: миниатюры окон слева macOS рисует наклонёнными карточками, а рамка окна
+        // остаётся прямоугольной — снег висел мимо. У каждой миниатюры есть окно WindowManager с той же
+        // рамкой: такие окна (и сами окна WindowManager) снег не принимают.
+        var stageFrames: [CGRect] = []
+        for info in raw {
+            guard let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                  bundleID(pid) == "com.apple.WindowManager",
+                  let b = info[kCGWindowBounds as String] as? [String: Any] else { continue }
+            stageFrames.append(CGRect(x: num(b["X"]), y: num(b["Y"]), width: num(b["Width"]), height: num(b["Height"])))
+        }
         for info in raw {
             guard let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, pid != ownPID,
                   let id = (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
@@ -34,6 +44,9 @@ final class WindowTracker {
             let frame = CGRect(x: num(b["X"]), y: num(b["Y"]), width: num(b["Width"]), height: num(b["Height"]))
             let alpha = (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
             guard alpha > 0.05, frame.width >= 60, frame.height >= 30 else { continue }
+            if bundleID(pid) == "com.apple.WindowManager" { continue }
+            if stageFrames.contains(where: { abs($0.minX - frame.minX) < 1.5 && abs($0.minY - frame.minY) < 1.5
+                                             && abs($0.width - frame.width) < 1.5 && abs($0.height - frame.height) < 1.5 }) { continue }
 
             let kind: TrackedWindow.Kind
             if layer == 0 {

@@ -455,6 +455,7 @@ let groundFull = ar.ground.total
 world.excavator.setEnabled(true)
 var exPhases: [String] = []
 var maxLoad: Float = 0, flewOut = 0, exFrames = 0
+var workMin = Float.greatestFiniteMagnitude, workMax: Float = -1
 let filmEx = ProcessInfo.processInfo.environment["SNAP_FILM"] != nil
 while exFrames < 60 * 90 {
     run(1.0 / 60); exFrames += 1
@@ -468,16 +469,32 @@ while exFrames < 60 * 90 {
     }
     if filmEx && exFrames == 240 { render("ex-collecting", lightWindows: false) }
     maxLoad = max(maxLoad, world.excavator.load)
+    if ph == "collecting" { workMin = min(workMin, world.excavator.workX); workMax = max(workMax, world.excavator.workX) }
     flewOut = max(flewOut, ar.flakes.filter { $0.x > Float(ar.bounds.maxX) }.count)
     if ph == "resting" { break }
 }
+let groundAfterFirst = ar.ground.total
 let dumps = exPhases.filter { $0 == "dumping" }.count
 let visit = Float(exFrames) / 60
-check(exPhases.starts(with: ["arriving", "collecting"]) && dumps >= 2 && exPhases.last == "resting" && visit >= 14 && visit <= 26,
+check(exPhases.first == "arriving" && exPhases.contains("collecting") && dumps >= 1 && exPhases.last == "resting" && visit >= 12 && visit <= 30,
       "экскаватор работал \(String(format: "%.1f", visit)) с и высыпал \(dumps) раз: \(exPhases.joined(separator: " → "))")
+// Ещё два приезда (отдых пропускаем): каждый — в свою треть кромки, вместе — по всей.
+for _ in 0..<2 {
+    world.excavator.comeBackNow()
+    var f = 0
+    repeat {
+        run(1.0 / 60); f += 1
+        if world.excavator.phaseName == "collecting" {
+            workMin = min(workMin, world.excavator.workX); workMax = max(workMax, world.excavator.workX)
+        }
+    } while world.excavator.phaseName != "resting" && f < 60 * 60
+    for i in stride(from: Float(ar.bounds.minX), to: Float(ar.bounds.maxX), by: 2.5) { ar.ground.deposit(at: i - Float(ar.bounds.minX), area: 25) }
+}
+let span = Float(ar.bounds.width)
+check(workMax - workMin > span * 0.55, "за три приезда убирал по всей кромке: от \(Int(workMin)) до \(Int(workMax)) pt из \(Int(span))")
 check(maxLoad >= world.excavator.capacity - 1, "набрал полный ковш: \(Int(maxLoad)) из \(Int(world.excavator.capacity)) pt²")
 check(flewOut > 10, "снег из ковша улетел за правый край: \(flewOut) снежинок за экраном")
-check(ar.ground.total < groundFull - world.excavator.capacity * 0.8, "сугроб убыл: \(Int(groundFull)) → \(Int(ar.ground.total)) pt²")
+check(groundAfterFirst < groundFull - world.excavator.capacity * 0.8, "сугроб убыл: \(Int(groundFull)) → \(Int(groundAfterFirst)) pt²")
 var restFrames = 0
 while world.excavator.phaseName == "resting" && restFrames < 60 * 60 { run(1.0 / 60); restFrames += 1 }
 let period = visit + Float(restFrames) / 60

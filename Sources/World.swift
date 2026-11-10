@@ -432,6 +432,10 @@ final class SnowWorld {
             self.changed = true
             return a.ground.carve(at: x - Float(a.bounds.minX), halfWidth: half, fraction: frac)
         }
+        excavator.snowAt = { [unowned self] x in
+            guard let a = self.areas.first else { return 0 }
+            return a.ground.height(at: x - Float(a.bounds.minX))
+        }
         excavator.spill = { [unowned self] p, v in
             self.emitOne(x: p.x, y: p.y, vx: v.x, vy: v.y, stick: 0)
         }

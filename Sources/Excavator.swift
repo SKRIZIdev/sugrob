@@ -1,13 +1,14 @@
 import Foundation
 import simd
 
-/// Маленький погрузчик с ковшом. Приезжает справа раз в ~40 с и ~15 с убирает снег: едучи налево,
-/// сгребает сугроб у нижней кромки в кучу фиксированного размера; набрал (или упёрся в пряничный домик) —
-/// разворачивается, везёт к правому краю, опрокидывает ковш — снег летит за экран — и едет за следующей
-/// порцией. Время вышло — отвозит последнюю порцию и уезжает за край.
+/// Маленький погрузчик с ковшом. Приезжает справа раз в ~40 с и ~15 с убирает снег. Каждый приезд —
+/// в свою часть кромки по очереди (правая треть, середина, левая у домика), так что за несколько
+/// приездов он объезжает весь сугроб. На участке выбирает, где снега больше (случайно среди самых
+/// заснеженных мест и не там же, где в прошлый раз), сгребает кучу фиксированного размера, везёт к
+/// правому краю и опрокидывает ковш — снег летит за экран. Время вышло — последняя порция, и уезжает.
 /// Колёса крутятся, корпус наклоняется по неровностям сугроба, мигает маячок, из трубы дымок.
 final class Excavator {
-    enum Phase { case arriving, collecting, carrying, dumping, turning, leaving, resting, gone }
+    enum Phase { case arriving, transit, collecting, carrying, dumping, turning, leaving, resting, gone }
 
     private(set) var phase: Phase = .gone
     private var phaseT: Float = 0
@@ -26,6 +27,13 @@ final class Excavator {
     let visitEvery: Float = 40
     private var workLeft: Float = 0
     private var speed: Float = 24
+    private var spot: Float = 0
+    private var lastSpot: Float = .nan
+    private var run: Float = 0
+    private var afterTurn: Phase = .collecting
+    private var visits = 0
+    /// Весь приезд вместе с переездами — не дольше, чтобы интервал ~40 с сохранялся.
+    let visitCap: Float = 25
     private var visitStart: Float = 0
     let scale: Float = 0.75
     private var clock: Float = 0
@@ -41,6 +49,8 @@ final class Excavator {
     var groundTop: ((Float) -> Float)?
     var carve: ((Float, Float, Float) -> Float)?
     var spill: ((SIMD2<Float>, SIMD2<Float>) -> Void)?
+    /// Высота сугроба под глобальным x — чтобы выбирать, где убирать.
+    var snowAt: ((Float) -> Float)?
     /// Где можно ездить: края экрана и левая граница (справа от пряничного домика, если он есть).
     var bounds: (minX: Float, maxX: Float) = (0, 1000)
     var leftLimit: Float = 0
@@ -67,71 +77,79 @@ final class Excavator {
 
     /// Въехать прямо сейчас (для проверок).
     func comeBackNow() { if phase == .resting { restFor = 0 } }
+    /// Где он сейчас убирает (для проверок).
+    var workX: Float { x }
 
     private func go(_ p: Phase) { phase = p; phaseT = 0 }
 
     private func startVisit() {
         workLeft = workTime
         visitStart = clock
+        visits += 1
+        lastSpot = .nan
         go(.arriving)
     }
 
     /// Шаг. Возвращает true, если надо перерисовать.
     func step(_ dt: Float) -> Bool {
         guard phase != .gone else { return false }
+        clock += dt
+        phaseT += dt
         if phase == .resting {
-            phaseT += dt
-            clock += dt
             if phaseT >= restFor { x = bounds.maxX + half + 30; dir = -1; startVisit() }
             return false
         }
-        clock += dt
-        phaseT += dt
         func drive(_ v: Float) {
             x += dir * v * dt
             wheel += dir * v * dt / (7 * scale)
         }
         func ease(_ cur: inout Float, _ to: Float, _ rate: Float) { cur += (to - cur) * min(1, dt * rate) }
         let lipReach = half + 12 * bucketSize * scale
-        if phase == .collecting || phase == .carrying || phase == .dumping || phase == .turning { workLeft -= dt }
         let leftWall = max(bounds.minX, leftLimit)
+        if phase == .collecting { workLeft -= dt }
+        let overtime = clock - visitStart > visitCap
 
         switch phase {
         case .arriving:
             ease(&arm, 0.35, 4); ease(&tilt, -0.3, 4)
-            drive(42)
-            if x < bounds.maxX - half - 24 { go(.collecting) }
+            drive(60)
+            if x < bounds.maxX - half - 24 { headToSpot() }
+
+        case .transit:
+            // К выбранному месту — быстро, ковш приподнят.
+            ease(&arm, 0.3, 4); ease(&tilt, -0.25, 4)
+            drive(110)
+            if workLeft <= 0 || overtime { finish() }
+            else if (dir < 0 && x <= spot) || (dir > 0 && x >= spot) { speed = 30; run = 0; go(.collecting) }
 
         case .collecting:
             ease(&arm, 0, 5); ease(&tilt, 0, 5)
             drive(speed)
-            // Ковш у земли снимает сугроб слоями перед собой, а не выкапывает яму в одном месте.
-            // Где снега нет (уже расчищено) — едет быстрее, где есть — сбавляет ход и сгребает.
+            run += speed * dt
+            // Ковш у земли снимает сугроб слоями; по расчищенному — быстрее, по снегу — сбавляет ход.
             var got: Float = 0
             if arm < 0.15, let carve {
-                let lip = x + dir * lipReach
-                got = carve(lip, 7.5 * bucketSize * scale, min(1, 24 * dt / 9))
+                got = carve(x + dir * lipReach, 7.5 * bucketSize * scale, min(1, 24 * dt / 9))
                 load = min(capacity, load + got)
             }
             ease(&speed, got / max(dt, 0.001) > 40 ? 30 : 60, 3)
             let atLeft = dir < 0 && x - lipReach <= leftWall + 2
             let atRight = dir > 0 && x + lipReach >= bounds.maxX - 2
-            if load >= capacity || workLeft <= 0 {
-                // Полный ковш или время вышло — к правому краю (пустым — просто уезжает).
-                if load < 1 && workLeft <= 0 { dir = 1; go(.leaving) }
-                else if dir > 0 { go(.carrying) } else { nextDir = 1; go(.turning) }
+            if load >= capacity || workLeft <= 0 || overtime {
+                finish()
+            } else if run > 300 {
+                // Участок пройден, а ковш не полон: с хорошей кучей — к краю, иначе на новое место.
+                if load > capacity * 0.5 { finish(dumpOnly: true) } else { headToSpot() }
             } else if atLeft {
-                nextDir = 1
-                go(.turning)                      // упёрся в домик — разворачивается и сгребает обратно
+                nextDir = 1; afterTurn = .collecting; go(.turning)    // упёрся в домик — сгребает обратно
             } else if atRight {
-                go(load > 1 ? .dumping : .leaving)
+                go(load > 1 ? .dumping : .turning)
             }
 
         case .carrying:
             ease(&arm, 0.55, 4); ease(&tilt, -0.5, 4)
-            drive(70)
-            let edge = dir > 0 ? x + lipReach >= bounds.maxX - 2 : x - lipReach <= bounds.minX + 2
-            if edge { go(.dumping) }
+            drive(120)
+            if x + lipReach >= bounds.maxX - 2 { go(.dumping) }
 
         case .dumping:
             // Поднял ковш и опрокинул у самого края: снег летит за экран.
@@ -143,45 +161,89 @@ final class Excavator {
                 spilled += out
                 while spilled >= 8 {
                     spilled -= 8
-                    let lip = bucketLip()
-                    spill?(lip, SIMD2(dir * rng.range(130...240), rng.range(-90 ... 10)))
+                    spill?(bucketLip(), SIMD2(dir * rng.range(130...240), rng.range(-90 ... 10)))
                 }
             }
             if phaseT > 1.2 {
                 load = 0
-                // Время ещё есть — за следующей порцией, иначе уезжает за край.
-                if workLeft > 0 { nextDir = -1; go(.turning) } else { dir = 1; go(.leaving) }
+                if workLeft > 0 && !overtime { headToSpot() } else { dir = 1; go(.leaving) }
             }
 
         case .turning:
             ease(&arm, 0.3, 4); ease(&tilt, -0.2, 4)
             if phaseT > 0.5 {
                 dir = nextDir
-                go(load >= capacity || (workLeft <= 0 && dir > 0) ? .carrying : .collecting)
+                if afterTurn == .collecting { run = 0; speed = 30 }
+                go(afterTurn)
             }
 
         case .leaving:
             ease(&arm, 0.35, 4); ease(&tilt, -0.3, 4)
-            drive(enabled ? 45 : 70)
+            drive(enabled ? 80 : 90)
             if x > bounds.maxX + half + 40 || x < bounds.minX - half - 40 {
                 load = 0
                 // Следующий приезд — через ~40 с от начала этого.
                 if enabled { restFor = max(8, visitEvery - (clock - visitStart)); go(.resting) } else { go(.gone) }
             }
 
-        case .resting:
-            // За экраном: отдыхает и въезжает снова справа.
-            if phaseT >= restFor {
-                x = bounds.maxX + half + 30
-                dir = -1
-                startVisit()
-            }
-
-        case .gone:
+        case .resting, .gone:
             break
         }
         if phase == .collecting || phase == .carrying { x = min(max(x, leftWall + half), bounds.maxX - half) }
         return true
+    }
+
+    /// Куда ехать дальше: случайно среди самых заснеженных участков по всей кромке, не туда же.
+    private func pickSpot() -> Float? {
+        guard let snowAt else { return nil }
+        let fullLo = max(bounds.minX, leftLimit) + half + 50, fullHi = bounds.maxX - half - 40
+        guard fullHi > fullLo else { return nil }
+        // Участок этого приезда: правая треть, середина, левая треть — по очереди.
+        let third = (fullHi - fullLo) / 3
+        let zone = Float((visits - 1) % 3)
+        let lo = fullHi - third * (zone + 1), hi = fullHi - third * zone
+        var cands: [(x: Float, snow: Float)] = []
+        var cx = lo
+        while cx <= hi {
+            var sum: Float = 0
+            var u = cx - 60
+            while u <= cx + 60 { sum += snowAt(u); u += 10 }
+            cands.append((cx, sum))
+            cx += 20
+        }
+        var best = cands.map(\.snow).max() ?? 0
+        if best <= 20 {
+            // На своём участке чисто — ищет по всей кромке.
+            cands = stride(from: fullLo, through: fullHi, by: 20).map { cx in
+                (cx, stride(from: cx - 60, through: cx + 60, by: 10).reduce(0) { $0 + snowAt($1) })
+            }
+            best = cands.map(\.snow).max() ?? 0
+        }
+        guard best > 20 else { return nil }                      // снега почти нет
+        var pool = cands.filter { $0.snow >= best * 0.55 && (lastSpot.isNaN || abs($0.x - lastSpot) > 220) }
+        if pool.isEmpty { pool = cands.filter { $0.snow >= best * 0.55 } }
+        let pick = pool[min(pool.count - 1, Int(rng.unit() * Float(pool.count)))].x
+        lastSpot = pick
+        return pick
+    }
+
+    private func headToSpot() {
+        // На новое место — только если до конца приезда ещё есть хотя бы ~6 с, иначе домой.
+        guard workLeft > 0, clock - visitStart < visitCap - 6, let s = pickSpot() else { finish(); return }
+        spot = s
+        let want: Float = s < x ? -1 : 1
+        if want != dir { nextDir = want; afterTurn = .transit; go(.turning) } else { go(.transit) }
+    }
+
+    /// Закончить рейс: есть груз — к правому краю высыпать; нет — уехать (или, если время есть, на новое место).
+    private func finish(dumpOnly: Bool = false) {
+        if load > 1 {
+            if dir > 0 { go(.carrying) } else { nextDir = 1; afterTurn = .carrying; go(.turning) }
+        } else if workLeft > 0 && !dumpOnly && clock - visitStart < visitCap - 6 {
+            headToSpot()
+        } else {
+            if dir > 0 { go(.leaving) } else { nextDir = 1; afterTurn = .leaving; go(.turning) }
+        }
     }
 
     // MARK: Геометрия
