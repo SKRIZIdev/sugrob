@@ -30,7 +30,10 @@ final class SnowView: MTKView {
 
 final class Overlay {
     /// Высота полосы над нижней кромкой, где рисуется снег на Dock: Dock (~83 pt) + отступ + шапка.
+    /// Когда на Dock лепят снеговика, полоса растёт до его верха (иначе ком срезался).
     static let dockStrip: CGFloat = 170
+    private(set) var stripHeight: CGFloat = Overlay.dockStrip
+    private var scale: CGFloat = 1.5
 
     let screen: NSScreen
     /// Основной слой: снегопад, сугробы на окнах и у кромки, снежки.
@@ -91,9 +94,6 @@ final class Overlay {
         v.wantsLayer = true
         v.layer?.isOpaque = false
         v.layer?.backgroundColor = .clear
-        // Кадры обоих слоёв (рабочий стол и Dock) уходят на экран одной транзакцией Core Animation:
-        // когда снег переходит со слоя на слой, не бывает кадра, где его нет ни там, ни там.
-        (v.layer as? CAMetalLayer)?.presentsWithTransaction = true
         v.world = world
         return v
     }
@@ -101,11 +101,23 @@ final class Overlay {
     /// Снег мягкий — полная Retina ему не нужна. 1.5x на глаз не отличить от 2x, а кадр
     /// весит 12.6 МБ вместо 22.5 МБ; в режиме энергосбережения — 1x.
     func setRenderScale(eco: Bool) {
-        let scale = min(screen.backingScaleFactor, eco ? 1 : 1.5)
+        scale = min(screen.backingScaleFactor, eco ? 1 : 1.5)
         renderer.scale = Float(scale)
         dockRenderer.scale = Float(scale)
         view.drawableSize = CGSize(width: screen.frame.width * scale, height: screen.frame.height * scale)
-        dockView.drawableSize = CGSize(width: screen.frame.width * scale, height: Overlay.dockStrip * scale)
+        dockView.drawableSize = CGSize(width: screen.frame.width * scale, height: stripHeight * scale)
+    }
+
+    /// Подогнать высоту полосы Dock под то, что на нём стоит.
+    func fitDockStrip(_ height: CGFloat) {
+        let h = min(max(height, Overlay.dockStrip), screen.frame.height)
+        guard h != stripHeight else { return }
+        stripHeight = h
+        dockWindow.setFrame(NSRect(x: screen.frame.minX, y: screen.frame.minY, width: screen.frame.width, height: h), display: false)
+        dockView.frame = NSRect(x: 0, y: 0, width: screen.frame.width, height: h)
+        let b = dockRenderer.area.bounds
+        dockRenderer.region = CGRect(x: b.minX, y: b.maxY - h, width: b.width, height: h)
+        dockView.drawableSize = CGSize(width: screen.frame.width * scale, height: h * scale)
     }
 
     func draw() {

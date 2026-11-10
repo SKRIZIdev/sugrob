@@ -130,7 +130,7 @@ final class ScreenRenderer: NSObject, MTKViewDelegate {
     /// Слой снега на Dock: рисует только его и только в полосе `region` над Dock.
     let dockLayer: Bool
     /// Какой кусок экрана покрывает слой, глобальные CG-координаты.
-    let region: CGRect
+    var region: CGRect
     private var hadContent = true
     private unowned let world: SnowWorld
     private var points: [PointVertex] = []
@@ -204,11 +204,12 @@ final class ScreenRenderer: NSObject, MTKViewDelegate {
             enc.drawPrimitives(type: .point, vertexStart: r.balls, vertexCount: points.count - r.balls)
         }
         enc.endEncoding()
+        // Без ожидания видеокарты на главном потоке: синхронный показ двух слоёв (через
+        // транзакцию) давал подлагивание. Мигание при передаче снега между слоями закрыто иначе —
+        // у кромки на пару кадров остаётся тающая копия подхваченного сугроба.
+        cmd.present(drawable)
         let sem = inflight
         cmd.addCompletedHandler { _ in sem.signal() }
         cmd.commit()
-        // presentsWithTransaction: кадр покажется вместе с текущей транзакцией Core Animation.
-        cmd.waitUntilScheduled()
-        drawable.present()
     }
 }

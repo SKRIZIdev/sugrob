@@ -121,6 +121,12 @@ final class SnowWorld {
     private var dockSpill: Float = 0
     /// Снег с только что спрятавшегося Dock: тает на его слое, пока у кромки ложится настоящий сугроб.
     private var dockGhost: (map: Heightmap, originX: Float, y: Float, life: Float)?
+    /// Сугроб, только что подхваченный выехавшим Dock: ~0.15 с тает у кромки на основном слое.
+    /// Слои показываются независимо — без этой копии бывал кадр, где снега нет ни там, ни там.
+    private var groundGhost: (map: Heightmap, originX: Float, y: Float, life: Float)?
+    private let groundGhostLife: Float = 0.15
+    /// Dock двигается или с него ещё падает/тает снег — для замера плавности.
+    private(set) var dockBusy = false
     private let ghostLife: Float = 0.9
     /// Снег, сорвавшийся с уходящего вниз Dock: миг держится, падает пластом, у кромки разбивается.
     private var dockSlab: (map: Heightmap, originX: Float, y: Float, vy: Float, age: Float)?
@@ -128,6 +134,17 @@ final class SnowWorld {
 
     /// Dock на экране (выехал или едет) — его надо опрашивать каждый кадр.
     var dockShown: Bool { dock?.visible == true }
+    /// Какой высоты нужна полоса слоя Dock на этом экране: Dock со снегом, а если на нём стоит
+    /// снеговик — до его макушки (с шагом 60 pt, чтобы окно не дёргалось на каждом кадре).
+    func dockLayerHeight(for a: ScreenArea) -> CGFloat {
+        var top = Float(a.bounds.maxY) - 170
+        for b in balls where b.onDock && b.x >= Float(a.bounds.minX) && b.x < Float(a.bounds.maxX) {
+            top = min(top, b.y - b.r - 16)
+        }
+        let need = CGFloat(Float(a.bounds.maxY) - top)
+        return need <= 170 ? 170 : (need / 60).rounded(.up) * 60
+    }
+
     /// Тает ли сейчас копия снега спрятавшегося Dock (для проверок).
     var dockGhostAlive: Bool { dockGhost != nil }
     /// Падает ли сейчас пласт снега, сорвавшийся с Dock (для проверок).
@@ -224,9 +241,15 @@ final class SnowWorld {
     /// на остановке подпрыгивает (пружина), с краёв крошится. Прячась — везёт снег вниз, у кромки
     /// кладёт его обратно сугробом, а на слое Dock его копия плавно тает.
     private func stepDock(_ dt: Float) {
+        dockBusy = dockSlab != nil || dockGhost != nil || groundGhost != nil
         if var g = dockGhost {
             g.life += dt
             dockGhost = g.life < ghostLife ? g : nil
+            changed = true
+        }
+        if var g = groundGhost {
+            g.life += dt
+            groundGhost = g.life < groundGhostLife ? g : nil
             changed = true
         }
         guard let d = dock, let a = dockArea else { return }
@@ -253,6 +276,9 @@ final class SnowWorld {
             d.map.clear()
         }
         if shown && !dockRaised {
+            let ghost = Heightmap(width: Float(f.width), maxH: 100)
+            ghost.absorb(a.ground.copy(), offset: Float(f.minX - a.bounds.minX))
+            if ghost.total > 1 { groundGhost = (ghost, Float(f.minX), bottom, 0) }
             let (l, r) = d.map.absorb(a.ground, offset: Float(f.minX - a.bounds.minX))
             dockRaised = true
             dockGrow = 0
@@ -284,6 +310,7 @@ final class SnowWorld {
         stepSlab(dt)
         let frame = CGRect(x: f.minX, y: CGFloat(dockTop), width: f.width, height: f.height)
         guard frame != d.frame || d.visible != shown else { return }
+        dockBusy = true
         // Снеговики на Dock едут вместе с ним (пока снег не сорвался — тогда падают с пластом).
         let dy = dockTop - old
         if dy != 0 && dockSlab == nil {
@@ -873,6 +900,11 @@ final class SnowWorld {
                       scale: s.isDock ? dockLook.scale : 1, alpha: s.isDock ? dockLook.alpha : 1)
         }
         if !dockLayer { appendCap(a.groundSurface, x0, x1, &tris) }
+        if !dockLayer, let g = groundGhost, dockArea === a {
+            let k = g.life / groundGhostLife
+            let ghost = Surface(a: g.originX, b: g.originX + g.map.width, y: g.y, originX: g.originX, map: g.map, window: nil)
+            appendCap(ghost, max(ghost.a, x0), min(ghost.b, x1), &tris, alpha: 1 - k)
+        }
         if dockLayer, let sl = dockSlab, dockArea === a {
             let slab = Surface(a: sl.originX, b: sl.originX + sl.map.width, y: sl.y, originX: sl.originX, map: sl.map, window: nil)
             appendCap(slab, max(slab.a, x0), min(slab.b, x1), &tris)

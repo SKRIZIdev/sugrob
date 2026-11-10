@@ -52,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func tick(_ l: CADisplayLink) {
+        let workStart = CACurrentMediaTime()
         let now = l.timestamp
         let dt = lastTick == 0 ? 1.0 / 60 : now - lastTick
         lastTick = now
@@ -87,10 +88,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         world.step(dt: Float(dt))
         if world.needsRedraw {
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            for o in overlays { o.draw() }
-            CATransaction.commit()
+            for o in overlays {
+                o.fitDockStrip(world.dockLayerHeight(for: o.renderer.area))
+                o.draw()
+            }
+        }
+        measure(now: now, dt: dt, work: CACurrentMediaTime() - workStart)
+    }
+
+    // MARK: Замер плавности, пока двигается Dock
+    // `defaults read com.ivan.sugrob diag.dock` — последние движения Dock: кадров, пропусков, худший
+    // интервал между кадрами и худшее время нашей работы в кадре.
+
+    private var dockStats: (frames: Int, slow: Int, maxGap: Double, maxWork: Double, sumWork: Double)?
+    private var dockLog: [String] = []
+
+    private func measure(now: CFTimeInterval, dt: CFTimeInterval, work: CFTimeInterval) {
+        if world.dockBusy {
+            var s = dockStats ?? (0, 0, 0, 0, 0)
+            s.frames += 1
+            if s.frames > 1 {
+                if dt > 1.5 / 60 { s.slow += 1 }
+                s.maxGap = max(s.maxGap, dt)
+            }
+            s.maxWork = max(s.maxWork, work)
+            s.sumWork += work
+            dockStats = s
+        } else if let s = dockStats {
+            dockStats = nil
+            let line = String(format: "кадров %d, пропусков %d, худший интервал %.1f мс, работа в кадре: худшая %.1f мс, средняя %.1f мс",
+                              s.frames, s.slow, s.maxGap * 1000, s.maxWork * 1000, s.sumWork / Double(max(s.frames, 1)) * 1000)
+            dockLog = Array((dockLog + [line]).suffix(8))
+            UserDefaults.standard.set(dockLog, forKey: "diag.dock")
         }
     }
 

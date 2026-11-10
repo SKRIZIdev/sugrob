@@ -249,6 +249,10 @@ if let s = world.surfaces.first(where: { $0.isDock }) {
           "снег облегает угол Dock: на дуге \(String(format: "%.1f", h)) pt, опора ниже кромки на \(String(format: "%.1f", g.y - s.y)), наружу за плашку \(String(format: "%.1f", outerX - s.b)) pt")
 }
 let man = world.balls
+let crown = man.map { $0.y - $0.r }.min() ?? 956
+let strip = world.dockLayerHeight(for: world.areas[0])
+check(Float(H) - Float(strip) <= crown - 10,
+      "полоса слоя Dock доросла до макушки снеговика: полоса \(Int(strip)) pt, макушка на \(Int(crown)) (верх полосы \(Int(H - strip)))")
 check(man.count == 3 && man.allSatisfy { $0.onDock && $0.resting && $0.y + $0.r < 875 },
       "снеговик поднялся вместе с Dock: низы комьев \(man.map { Int($0.y + $0.r) }), на Dock: \(man.map { $0.onDock })")
 run(0.15)
