@@ -37,8 +37,24 @@ struct Surface {
     let map: Heightmap
     var window: CGWindowID?     // nil — земля или Dock
     var isDock = false
+    /// Радиус скругления концов (Dock). Снег у концов лежит не на прямой, а по дуге угла и
+    /// толщину набирает по нормали — облегает угол, а не висит над ним.
+    var corner: Float = 0
 
-    @inline(__always) func top(at x: Float) -> Float { y - map.height(at: x - originX) }
+    /// Точка опоры под x и внешняя нормаль к ней (у прямой кромки — строго вверх).
+    @inline(__always) func base(at x: Float) -> (y: Float, nx: Float, ny: Float) {
+        guard corner > 0 else { return (y, 0, -1) }
+        let r = corner
+        let cx: Float
+        if x - a < r { cx = a + r } else if b - x < r { cx = b - r } else { return (y, 0, -1) }
+        let dx = max(-r, min(r, x - cx))
+        let dy = (r * r - dx * dx).squareRoot()
+        return (y + r - dy, dx / r, -dy / r)
+    }
+    @inline(__always) func top(at x: Float) -> Float {
+        let g = base(at: x)
+        return g.y + g.ny * map.height(at: x - originX)
+    }
 }
 
 struct Ball {
@@ -86,8 +102,17 @@ final class SnowWorld {
     private weak var dockArea: ScreenArea?
     private var dockTop: Float = 0       // где верх Dock нарисован сейчас
     private var dockRaised = false       // снег сейчас на крыше Dock, а не у кромки под ним
-    /// Снег не доходит до самых краёв Dock — там скруглённые углы.
-    static let dockInset: CGFloat = 6
+    /// Видимая «стеклянная» плашка Dock относительно рамки списка из Accessibility. Замер по
+    /// скриншоту macOS 26 (10.11.2026): по горизонтали совпадает с рамкой, верх плашки на ~5 pt ниже
+    /// верха рамки, радиус угла 28 pt. Без поправки снег висел над Dock в 5 pt от плашки.
+    static var dockPlatterInsetX: CGFloat = 0
+    static var dockPlatterTop: CGFloat = 5
+    /// Радиус скругления углов плашки. Предел высоты снега у концов = cos угла наклона дуги.
+    static var dockCorner: Float = 28
+    static func platter(_ ax: CGRect) -> CGRect {
+        CGRect(x: ax.minX + dockPlatterInsetX, y: ax.minY + dockPlatterTop,
+               width: ax.width - 2 * dockPlatterInsetX, height: max(1, ax.height - dockPlatterTop))
+    }
     private var dockVy: Float = 0
     private var dockGrow: Float = 1          // 0…1 — снег «распушается» на только что выехавшем Dock
     private var dockSquash: Float = 0        // пружина: <0 — сжат рывком вверх, >0 — подлетает
@@ -96,12 +121,18 @@ final class SnowWorld {
     private var dockSpill: Float = 0
     /// Снег с только что спрятавшегося Dock: тает на его слое, пока у кромки ложится настоящий сугроб.
     private var dockGhost: (map: Heightmap, originX: Float, y: Float, life: Float)?
-    private let ghostLife: Float = 0.5
+    private let ghostLife: Float = 0.9
+    /// Снег, сорвавшийся с уходящего вниз Dock: миг держится, падает пластом, у кромки разбивается.
+    private var dockSlab: (map: Heightmap, originX: Float, y: Float, vy: Float, age: Float)?
+    private let slabGravity: Float = 2200
 
     /// Dock на экране (выехал или едет) — его надо опрашивать каждый кадр.
     var dockShown: Bool { dock?.visible == true }
     /// Тает ли сейчас копия снега спрятавшегося Dock (для проверок).
     var dockGhostAlive: Bool { dockGhost != nil }
+    /// Падает ли сейчас пласт снега, сорвавшийся с Dock (для проверок).
+    var dockSlabFalling: Bool { dockSlab != nil }
+    var dockSlabDebug: String { dockSlab.map { "y=\(Int($0.y)) vy=\(Int($0.vy)) age=\(String(format: "%.2f", $0.age))" } ?? "-" }
     /// Где Dock нарисован сейчас и сколько снега на нём (для проверок).
     var dockState: (frame: CGRect, snow: Float)? { dock.map { ($0.frame, $0.map.total) } }
     private(set) var surfaces: [Surface] = []
@@ -180,10 +211,10 @@ final class SnowWorld {
         }
         dockTarget = f
         if dock == nil || dockArea !== a {
-            dock = Cap(frame: f.insetBy(dx: SnowWorld.dockInset, dy: 0), maxH: 12, now: now, endRadius: 26)
+            dock = Cap(frame: SnowWorld.platter(f), maxH: 12, now: now, endRadius: SnowWorld.dockCorner)
             dock?.visible = false
             dockArea = a
-            dockTop = min(Float(f.minY), Float(a.bounds.maxY))
+            dockTop = min(Float(SnowWorld.platter(f).minY), Float(a.bounds.maxY))
             dockRaised = false
         }
     }
@@ -201,9 +232,10 @@ final class SnowWorld {
         guard let d = dock, let a = dockArea else { return }
         guard let raw = dockTarget else {
             if d.visible { d.visible = false; rebuildSurfaces(); changed = true }
+            stepSlab(dt)
             return
         }
-        let f = raw.insetBy(dx: SnowWorld.dockInset, dy: 0)
+        let f = SnowWorld.platter(raw)
         let bottom = Float(a.bounds.maxY)
         // Accessibility отдаёт каждый шаг анимации Dock (~раз в 10 мс) — идём за ним без сглаживания.
         let old = dockTop
@@ -214,6 +246,12 @@ final class SnowWorld {
         if abs(d.frame.width - f.width) > 0.5 { d.map.resize(width: Float(f.width)) }
 
         let shown = dockTop < bottom - 0.5
+        // Dock пошёл вниз — снег с него срывается пластом и дальше падает сам.
+        if dockRaised, shown, vy > 40, dockSlab == nil, d.map.total > 1 {
+            // Трение тянет снег за полкой: он стартует с частью её скорости, но отстаёт.
+            dockSlab = (d.map.copy(), Float(d.frame.minX), old, max(0, vy * 0.45), 0)
+            d.map.clear()
+        }
         if shown && !dockRaised {
             let (l, r) = d.map.absorb(a.ground, offset: Float(f.minX - a.bounds.minX))
             dockRaised = true
@@ -224,11 +262,14 @@ final class SnowWorld {
             crumble(x: Float(f.maxX), y: dockTop, amount: r, dir: 1)
             puff(d.map, originX: Float(f.minX), top: dockTop)
         } else if !shown && dockRaised {
-            if d.map.total > 1 { dockGhost = (d.map.copy(), Float(f.minX), bottom, 0) }
-            a.ground.absorb(d.map, offset: Float(a.bounds.minX - f.minX))
+            if d.map.total > 1 {
+                dockGhost = (d.map.copy(), Float(f.minX), bottom, 0)
+                a.ground.absorb(d.map, offset: Float(a.bounds.minX - f.minX))
+            }
+            d.map.clear()
             dockRaised = false
-            // Снеговики доехали с Dock до кромки и стоят уже на земле — рисуются снова за окнами.
-            for i in balls.indices where balls[i].onDock { balls[i].onDock = false }
+            // Снеговики доехали до кромки и стоят уже на земле — рисуются снова за окнами.
+            if dockSlab == nil { for i in balls.indices where balls[i].onDock { balls[i].onDock = false } }
         }
 
         // Пружина «снег на подвижной полке».
@@ -240,12 +281,12 @@ final class SnowWorld {
         dockLook = ((0.5 + 0.5 * back) * (1 + dockSquash), min(1, 0.35 + dockGrow * 1.6))
         if dockGrow < 1 || abs(dockSquash) > 0.002 || abs(dockSquashV) > 0.02 { changed = true }
 
+        stepSlab(dt)
         let frame = CGRect(x: f.minX, y: CGFloat(dockTop), width: f.width, height: f.height)
         guard frame != d.frame || d.visible != shown else { return }
-        // Снеговики на Dock едут вместе с ним: в масштабе экрана тяжесть огромна, и с уходящей
-        // вниз полки ничего не «зависает» в воздухе.
+        // Снеговики на Dock едут вместе с ним (пока снег не сорвался — тогда падают с пластом).
         let dy = dockTop - old
-        if dy != 0 {
+        if dy != 0 && dockSlab == nil {
             for i in balls.indices where balls[i].onDock && balls[i].resting && !balls[i].held { balls[i].y += dy }
         }
         d.frame = frame
@@ -256,6 +297,48 @@ final class SnowWorld {
         rebuildSurfaces()
         if shown { liftBalls() }
         changed = true
+    }
+
+    /// Пласт снега с ушедшего Dock: отстаёт от полки и падает с ускорением, крошась; у кромки
+    /// ложится сугробом, взбивает пыль, а на слое Dock его копия ещё 0.9 с тает. Если Dock успел
+    /// снова выехать — пласт ложится обратно на него.
+    private func stepSlab(_ dt: Float) {
+        guard var s = dockSlab, let a = dockArea else { return }
+        changed = true
+        s.age += dt
+        s.vy += slabGravity * dt
+        var dy = s.vy * dt
+        let bottom = Float(a.bounds.maxY)
+        let onDock = dock?.visible == true && dockTop < s.y + dy
+        let floor = onDock ? dockTop : bottom
+        if s.y + dy >= floor {
+            dy = floor - s.y
+            if onDock, let d = dock {
+                d.map.absorb(s.map, offset: Float(d.frame.minX) - s.originX)
+                dockRaised = true
+            } else {
+                a.ground.absorb(s.map.copy(), offset: Float(a.bounds.minX) - s.originX)
+                dockGhost = (s.map, s.originX, bottom, 0)
+                puff(s.map, originX: s.originX, top: bottom)
+                for i in balls.indices where balls[i].onDock { balls[i].onDock = false }
+            }
+            dockSlab = nil
+        } else {
+            s.y += dy
+            // Крошится на лету.
+            if rng.unit() < dt * 40 {
+                let lx = rng.unit() * s.map.width
+                let h = s.map.height(at: lx)
+                if h > 0.8 {
+                    emitOne(x: s.originX + lx, y: s.y - h, vx: rng.signed() * 30, vy: s.vy * 0.6 - 20,
+                            stick: 0.1, front: true)
+                }
+            }
+            dockSlab = s
+        }
+        if dy != 0 {
+            for i in balls.indices where balls[i].onDock && !balls[i].held { balls[i].y += dy }
+        }
     }
 
     /// Крошки с конца Dock: то, что не удержалось на скруглённом краю.
@@ -321,7 +404,8 @@ final class SnowWorld {
         if let d = dock, let df = dockFrame {
             // Снег на Dock рисуется своим слоем прямо над Dock — окна его не закрывают.
             list.append(Surface(a: Float(df.minX), b: Float(df.maxX), y: Float(df.minY),
-                                originX: Float(df.minX), map: d.map, window: nil, isDock: true))
+                                originX: Float(df.minX), map: d.map, window: nil, isDock: true,
+                                corner: SnowWorld.dockCorner))
         }
         // Слой снега лежит под всеми окнами: шапку над кромкой прячет любое окно, виджет или Dock,
         // занявшие полосу над ней, — снег виден только на открытом рабочем столе.
@@ -611,6 +695,8 @@ final class SnowWorld {
         let floor = areas.map { Float($0.bounds.maxY) }.max() ?? 3000
         for i in balls.indices {
             if balls[i].held { active = true; continue }
+            // Снеговик на сорвавшемся с Dock пласте падает вместе с ним (двигает stepSlab).
+            if dockSlab != nil && balls[i].onDock { active = true; continue }
             if balls[i].resting, let w = balls[i].window {
                 if let cap = caps[w], cap.visible {
                     let nx = Float(cap.frame.minX) + balls[i].off.x, ny = Float(cap.frame.minY) + balls[i].off.y
@@ -664,7 +750,10 @@ final class SnowWorld {
         }
         for a in areas where Float(a.bounds.minX) <= b.x && b.x < Float(a.bounds.maxX) {
             let g = a.groundSurface
-            let sy = g.top(at: b.x) + min(r * 0.25, a.ground.height(at: b.x - g.originX) * 0.6)
+            var sy = g.top(at: b.x) + min(r * 0.25, a.ground.height(at: b.x - g.originX) * 0.6)
+            // Сугроб вырос прямо под комом (например, на него рухнул снег с Dock) — ком не
+            // проваливается сквозь землю, а остаётся стоять, присыпанный.
+            if sy < bottom - 4 && bottom <= Float(a.bounds.maxY) + 2 { sy = bottom }
             if sy >= bottom - 4 && sy < best { best = sy; win = nil; onDock = false }
         }
         for j in balls.indices where j != i && !balls[j].held && balls[j].resting {
@@ -784,10 +873,15 @@ final class SnowWorld {
                       scale: s.isDock ? dockLook.scale : 1, alpha: s.isDock ? dockLook.alpha : 1)
         }
         if !dockLayer { appendCap(a.groundSurface, x0, x1, &tris) }
+        if dockLayer, let sl = dockSlab, dockArea === a {
+            let slab = Surface(a: sl.originX, b: sl.originX + sl.map.width, y: sl.y, originX: sl.originX, map: sl.map, window: nil)
+            appendCap(slab, max(slab.a, x0), min(slab.b, x1), &tris)
+        }
         if dockLayer, let g = dockGhost, dockArea === a {
             let k = g.life / ghostLife
             let ghost = Surface(a: g.originX, b: g.originX + g.map.width, y: g.y, originX: g.originX, map: g.map, window: nil)
-            appendCap(ghost, max(ghost.a, x0), min(ghost.b, x1), &tris, scale: 1 - 0.4 * k, alpha: (1 - k) * (1 - k))
+            // Тает медленно в начале и быстрее к концу, заметно оседая.
+            appendCap(ghost, max(ghost.a, x0), min(ghost.b, x1), &tris, scale: 1 - 0.5 * k, alpha: 1 - k * k)
         }
         r.caps = tris.count
 
@@ -855,9 +949,14 @@ final class SnowWorld {
             if xa < clipA { ha += (hb - ha) * (clipA - xa) / c; xa = clipA }
             if xb > clipB { hb = ha + (hb - ha) * (clipB - xa) / max(xb - xa, 0.001); xb = clipB }
             if xb > xa {
-                let ya = s.y - ha, yb = s.y - hb
-                quad(&t, SIMD2(xa, ya), SIMD2(xb, yb), SIMD2(xb, s.y), SIMD2(xa, s.y), top, top, low, low)
-                quad(&t, SIMD2(xa, ya - 1.5), SIMD2(xb, yb - 1.5), SIMD2(xb, yb), SIMD2(xa, ya), rimOut, rimOut, rimIn, rimIn)
+                // Снег откладывается от опоры по нормали: на прямой кромке — вверх, на дуге
+                // скруглённого угла — наружу от дуги, и слой облегает угол.
+                let ga = s.base(at: xa), gb = s.base(at: xb)
+                let na = SIMD2(ga.nx, ga.ny), nb = SIMD2(gb.nx, gb.ny)
+                let ia = SIMD2(xa, ga.y), ib = SIMD2(xb, gb.y)
+                let oa = ia + na * ha, ob = ib + nb * hb
+                quad(&t, oa, ob, ib, ia, top, top, low, low)
+                quad(&t, oa + na * 1.5, ob + nb * 1.5, ob, oa, rimOut, rimOut, rimIn, rimIn)
             }
             i += 1
         }

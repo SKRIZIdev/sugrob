@@ -143,10 +143,26 @@ func render(_ name: String, lightWindows: Bool) {
         enc.drawPrimitives(type: .triangle, vertexStart: off + tris.count, vertexCount: front.count)
     }
     // Dock и снег на нём — над окнами, как в приложении.
-    if let d = world.dockState, world.dockShown {
+    // Слой Dock рисуется всегда: на нём и падающий пласт, и тающая копия, и снеговик на пласте.
+    if let d = world.dockState {
         var dockTris: [TriVertex] = []
-        let bar = SIMD4<Float>(0.55, 0.58, 0.64, 0.55)
-        rect(&dockTris, d.frame.insetBy(dx: 0, dy: 4), bar, bar)
+        // Плашка Dock со скруглёнными углами, как в macOS 26 (если Dock на экране).
+        let bar = SIMD4<Float>(0.55, 0.58, 0.64, world.dockShown ? 0.55 : 0)
+        let pf = CGRect(x: d.frame.minX, y: d.frame.minY, width: d.frame.width, height: 76)
+        let rr = CGFloat(SnowWorld.dockCorner)
+        rect(&dockTris, pf.insetBy(dx: rr, dy: 0), bar, bar)
+        rect(&dockTris, CGRect(x: pf.minX, y: pf.minY + rr, width: rr, height: pf.height - 2 * rr), bar, bar)
+        rect(&dockTris, CGRect(x: pf.maxX - rr, y: pf.minY + rr, width: rr, height: pf.height - 2 * rr), bar, bar)
+        for (cx, cy) in [(pf.minX + rr, pf.minY + rr), (pf.maxX - rr, pf.minY + rr), (pf.minX + rr, pf.maxY - rr), (pf.maxX - rr, pf.maxY - rr)] {
+            let c = SIMD2(Float(cx), Float(cy))
+            let sx: Float = cx < pf.midX ? -1 : 1, sy: Float = cy < pf.midY ? -1 : 1
+            for k in 0..<12 {
+                let a0 = Float(k) / 12 * .pi / 2, a1 = Float(k + 1) / 12 * .pi / 2
+                dockTris += [TriVertex(pos: c, color: bar),
+                             TriVertex(pos: c + SIMD2(sx * cos(a0), sy * sin(a0)) * Float(rr), color: bar),
+                             TriVertex(pos: c + SIMD2(sx * cos(a1), sy * sin(a1)) * Float(rr), color: bar)]
+            }
+        }
         var p2: [PointVertex] = [], t2: [TriVertex] = []
         let r2 = world.buildFrame(for: world.areas[0], dockLayer: true, points: &p2, tris: &t2)
         let o2 = dockTris.count
@@ -217,15 +233,20 @@ for (k, y) in dockUp.enumerated() {
 }
 if film { for k in 0..<6 { dockStep(863, frames: 3); render(String(format: "film-top-%02d", k), lightWindows: false) } }
 let onDock = world.dockState?.snow ?? 0
-check(world.dockShown && world.dockState?.frame.minY == 863, "Dock выехал: верх на \(world.dockState?.frame.minY ?? -1)")
+check(world.dockShown && world.dockState?.frame.minY == 863 + SnowWorld.dockPlatterTop, "Dock выехал, снег лежит на плашке: верх на \(world.dockState?.frame.minY ?? -1)")
 check(lying > 1000 && groundUnderDock() < lying * 0.05, "сугроб над Dock подхвачен: у кромки было \(Int(lying)), осталось \(Int(groundUnderDock())) pt²")
 check(onDock > lying * 0.6 && onDock < lying * 1.0, "на крыше Dock \(Int(onDock)) pt² из \(Int(lying)) — часть раскрошилась")
 check(world.areas[0].flakes.count > flakesBeforeDock, "на подъёме снег крошится: снежинок \(flakesBeforeDock) → \(world.areas[0].flakes.count)")
 let frontFlakes = world.areas[0].flakes.filter { $0.front }.count
 check(frontFlakes >= 8, "снежная пыль и крошки с Dock летят перед окнами: \(frontFlakes)")
-if let d = world.dockState, let s = world.surfaces.first(where: { $0.isDock }) {
-    let edge = s.map.height(at: 1), mid = s.map.height(at: s.map.width / 2)
-    check(edge < 1.5 && mid > 4, "края снега на Dock скруглены: у края \(edge) pt, в середине \(mid) pt (Dock \(Int(d.frame.minX))…\(Int(d.frame.maxX)))")
+if let s = world.surfaces.first(where: { $0.isDock }) {
+    // На дуге скруглённого угла снег есть и лежит по нормали к ней — облегает угол, наружу
+    // за плашку почти не выходит.
+    let x = s.b - s.corner * 0.3
+    let g = s.base(at: x), h = s.map.height(at: x - s.originX)
+    let outerX = x + g.nx * h
+    check(g.y > s.y + 1 && h > 2 && outerX < s.b + 3,
+          "снег облегает угол Dock: на дуге \(String(format: "%.1f", h)) pt, опора ниже кромки на \(String(format: "%.1f", g.y - s.y)), наружу за плашку \(String(format: "%.1f", outerX - s.b)) pt")
 }
 let man = world.balls
 check(man.count == 3 && man.allSatisfy { $0.onDock && $0.resting && $0.y + $0.r < 875 },
@@ -234,15 +255,27 @@ run(0.15)
 render("4-dock-up", lightWindows: false)
 dockStep(863, frames: 60)
 let settled = world.dockState?.snow ?? 0
-for (k, y) in dockUp.reversed().enumerated() {
+// Dock уезжает со скоростью из записи: ~10 мс на шаг, то есть на кадр 60 Гц — пропускаем каждый
+// третий отсчёт (~0.23 с на весь путь, как вживую).
+var slabFrames = 0, sawSlab = false
+for (k, y) in dockUp.reversed().enumerated() where k % 3 != 2 {
     dockStep(y)
+    if world.dockSlabFalling { sawSlab = true; slabFrames += 1 }
+    if ProcessInfo.processInfo.environment["SNAP_DEBUG"] != nil { print("    dock \(y) top=\(world.dockState?.frame.minY ?? -1) slab \(world.dockSlabDebug)") }
     if film && k % 3 == 0 { render(String(format: "film-down-%02d", k), lightWindows: false) }
 }
-dockStep(956, frames: 1)
-if film { for k in 0..<4 { render(String(format: "film-ghost-%02d", k), lightWindows: false); dockStep(956, frames: 6) } }
-check(world.dockGhostAlive, "Dock спрятался — снег с него тает на его слое, а не пропадает")
-dockStep(956, frames: 40)
-check(!world.dockGhostAlive, "через полсекунды тающая копия исчезла")
+check(sawSlab, "Dock пошёл вниз — снег сорвался пластом и падает сам, а не уезжает с ним")
+while world.dockSlabFalling && slabFrames < 90 {
+    dockStep(956)
+    slabFrames += 1
+    if film && slabFrames % 4 == 0 { render(String(format: "film-fall-%02d", slabFrames), lightWindows: false) }
+}
+check(!world.dockSlabFalling && slabFrames >= 10 && slabFrames <= 40,
+      "пласт падал \(slabFrames) кадров (~\(slabFrames * 1000 / 60) мс) и лёг у кромки сразу за Dock")
+check(world.dockGhostAlive, "у кромки снег тает на слое Dock, а не пропадает")
+if film { for k in 0..<4 { render(String(format: "film-ghost-%02d", k), lightWindows: false); dockStep(956, frames: 8) } }
+dockStep(956, frames: 60)
+check(!world.dockGhostAlive, "тающая копия исчезла")
 let back = groundUnderDock()
 check(!world.dockShown && (world.dockState?.snow ?? 1) < 0.01, "Dock спрятался, на нём пусто")
 check(back > settled * 0.75, "снег с Dock лёг обратно у кромки: \(Int(back)) pt² (на Dock было \(Int(settled)))")
