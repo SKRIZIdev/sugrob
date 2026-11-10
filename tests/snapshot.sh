@@ -16,6 +16,6 @@ fi
 swiftc -O -swift-version 5 ${EXTRA[@]+"${EXTRA[@]}"} -target "$(uname -m)-apple-macos14.0" \
   -framework AppKit -framework Metal -framework MetalKit -framework QuartzCore -framework ApplicationServices \
   Sources/Support.swift Sources/Heightmap.swift Sources/WindowTracker.swift Sources/World.swift \
-  Sources/Render.swift Sources/Overlay.swift tests/snapshot/main.swift -o build/snapshot
+  Sources/Render.swift Sources/Overlay.swift Sources/Scene.swift tests/snapshot/main.swift -o build/snapshot
 
 ./build/snapshot "$OUT"

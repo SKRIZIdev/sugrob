@@ -53,9 +53,15 @@ struct Surface {
     /// Настоящие края плашки: видимый кусок кромки может быть обрезан окном спереди,
     /// но скругляются только настоящие углы.
     var endA: Float = 0, endB: Float = 0
+    /// Уклон кромки dy/dx (скат крыши домика): опора y + slope·(x − originX), снег — по нормали.
+    var slope: Float = 0
 
     /// Точка опоры под x и внешняя нормаль к ней (у прямой кромки — строго вверх).
     @inline(__always) func base(at x: Float) -> (y: Float, nx: Float, ny: Float) {
+        if slope != 0 {
+            let n = (1 + slope * slope).squareRoot()
+            return (y + slope * (x - originX), slope / n, -1 / n)
+        }
         guard corner > 0 else { return (y, 0, -1) }
         let r = corner
         let cx: Float
@@ -118,6 +124,13 @@ final class SnowWorld {
     private weak var dockArea: ScreenArea?
     private var dockTop: Float = 0       // где верх Dock нарисован сейчас
     private var dockRaised = false       // снег сейчас на крыше Dock, а не у кромки под ним
+    /// Пряничный домик с ёлкой в левом нижнем углу основного экрана.
+    let scene = GingerbreadScene()
+    private var sceneAnchor: SIMD2<Float> {
+        guard let a = areas.first else { return .zero }
+        return SIMD2(Float(a.bounds.minX) + 26, Float(a.bounds.maxY))
+    }
+
     /// Видимая «стеклянная» плашка Dock относительно рамки списка из Accessibility. Замер по
     /// скриншоту macOS 26 (10.11.2026): по горизонтали совпадает с рамкой, верх плашки на ~5 pt ниже
     /// верха рамки, радиус угла 28 pt. Без поправки снег висел над Dock в 5 pt от плашки.
@@ -387,6 +400,22 @@ final class SnowWorld {
         }
     }
 
+    /// Домик убирают — снег с крыши и трубы осыпается.
+    private func dropSceneSnow() {
+        let o = sceneAnchor
+        for (map, x0, y0, k) in [(scene.roofLeft, o.x - 14, o.y - 64, -GingerbreadScene.pitch),
+                                 (scene.roofRight, o.x + 55, o.y - 120, GingerbreadScene.pitch),
+                                 (scene.chimneyTop, o.x + 74, o.y - 142, Float(0))] {
+            var x: Float = 0
+            while x < map.width {
+                let h = map.height(at: x)
+                if h > 0.6 { emitOne(x: x0 + x, y: y0 + k * x - h, vx: rng.signed() * 25, vy: rng.range(-40...0), stick: 0) }
+                x += 5
+            }
+        }
+        scene.clearSnow()
+    }
+
     /// Крошки с конца Dock: то, что не удержалось на скруглённом краю.
     private func crumble(x: Float, y: Float, amount: Float, dir: Float) {
         let n = min(16, Int(amount / 6))
@@ -466,6 +495,7 @@ final class SnowWorld {
                 }
             }
         }
+        list += scene.surfaces(anchor: sceneAnchor)
         surfaces = list
         for a in areas {
             let x0 = Float(a.bounds.minX), x1 = Float(a.bounds.maxX)
@@ -492,6 +522,12 @@ final class SnowWorld {
         stepDock(dt)
         let p = settings.intensity
         let wind = settings.wind.speed + gust
+        let (sceneActive, sceneSolid) = scene.step(dt, wind: wind)
+        if sceneSolid {
+            if !scene.solid { dropSceneSnow() }
+            rebuildSurfaces()
+        }
+        if sceneActive { changed = true }
         var flakes = 0
         for a in areas {
             if !settings.paused { spawn(a, p, wind, dt) }
@@ -625,6 +661,7 @@ final class SnowWorld {
             }
         }
         for a in areas where a.ground.dirty { a.ground.relax(edges: false); changed = true }
+        for m in [scene.roofLeft, scene.roofRight, scene.chimneyTop] where m.dirty { m.relax(edges: false); changed = true }
     }
 
     // MARK: Сброс снега
@@ -704,6 +741,7 @@ final class SnowWorld {
             budget -= 10
         }
         for c in caps.values { c.map.clear() }
+        scene.clearSnow()
         dock?.map.clear()
         for a in areas { a.ground.clear() }
         balls.removeAll()
@@ -1018,6 +1056,8 @@ final class SnowWorld {
         tris.removeAll(keepingCapacity: true)
         var r = FrameRanges()
         let x0 = Float(a.bounds.minX), x1 = Float(a.bounds.maxX)
+        // Домик рисуется первым: сугроб у кромки прикрывает его основание, снег на крыше — поверх.
+        if !dockLayer, a === areas.first, scene.visible { scene.draw(anchor: sceneAnchor, tris: &tris, points: &points) }
         for s in a.surfaces where s.isDock == dockLayer {
             appendCap(s, max(s.a, x0), min(s.b, x1), &tris,
                       scale: s.isDock ? dockLook.scale : 1, alpha: s.isDock ? dockLook.alpha : 1)

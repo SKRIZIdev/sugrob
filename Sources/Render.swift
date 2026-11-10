@@ -5,7 +5,7 @@ struct PointVertex {
     var pos: SIMD2<Float>
     var size: Float
     var alpha: Float
-    /// rgb + вид: 0 — снежинка, 1 — снежный шар, 2 — уголёк.
+    /// rgb + вид: 0 — снежинка, 1 — снежный шар, 2 — твёрдая точка, 3 — мягкое свечение, 4 — бусина.
     var color: SIMD4<Float>
 }
 
@@ -67,9 +67,24 @@ fragment float4 pointFS(PO in [[stage_in]], float2 pc [[point_coord]]) {
         float diff = saturate(dot(n, normalize(float3(-0.45, 0.55, 0.7))));
         c = mix(float3(0.70, 0.76, 0.87), float3(1.0), diff * 0.85 + 0.15);
         a = 1.0 - smoothstep(0.93, 1.0, r);
-    } else {
+    } else if (kind < 2.5) {
+        // Твёрдая точка своего цвета: уголёк, глазурь.
         c = in.color.rgb;
         a = 1.0 - smoothstep(0.7, 1.0, r);
+    } else if (kind < 3.5) {
+        // Мягкое свечение своего цвета: клуб дыма, огонёк, свет из окна.
+        float f = 1.0 - smoothstep(0.0, 1.0, r);
+        a = f * f;
+        c = in.color.rgb;
+    } else {
+        // Глянцевая бусина своего цвета: ёлочный шар, мармеладка.
+        float z = sqrt(max(0.0, 1.0 - r * r));
+        float3 n = float3(d.x, -d.y, z);
+        float3 l = normalize(float3(-0.45, 0.55, 0.7));
+        float diff = saturate(dot(n, l));
+        float spec = pow(saturate(dot(reflect(-l, n), float3(0.0, 0.0, 1.0))), 16.0);
+        c = in.color.rgb * (0.45 + 0.65 * diff) + spec * 0.55;
+        a = 1.0 - smoothstep(0.86, 1.0, r);
     }
     a *= in.alpha;
     return float4(c * a, a);

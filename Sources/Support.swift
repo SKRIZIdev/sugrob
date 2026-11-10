@@ -117,7 +117,7 @@ final class Settings {
     private init() {
         d.register(defaults: [
             "intensity": Intensity.steady.rawValue, "wind": 0, "gusts": true,
-            "accumulate": true, "cursorPush": true, "paused": false,
+            "accumulate": true, "cursorPush": true, "paused": false, "house": true,
         ])
     }
 
@@ -144,6 +144,11 @@ final class Settings {
     var paused: Bool {
         get { d.bool(forKey: "paused") }
         set { d.set(newValue, forKey: "paused") }
+    }
+    /// Пряничный домик с ёлкой в левом нижнем углу (по умолчанию включён).
+    var house: Bool {
+        get { d.bool(forKey: "house") }
+        set { d.set(newValue, forKey: "house") }
     }
     /// Экономный режим вручную: 30 кадров, вдвое меньше снега, кадр в 1x.
     var eco: Bool {

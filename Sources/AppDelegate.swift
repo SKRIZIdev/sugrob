@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if args.contains("--fast") { world.depositBoost = 12 }
         setupStatusItem()
         rebuildOverlays()
+        world.scene.setEnabled(settings.house)
         observe()
         updateEco()
         startLink()
@@ -237,6 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(submenu("Мышь", mouse))
         menu.addItem(.separator())
 
+        menu.addItem(item("Пряничный домик", #selector(toggleHouse), on: s.house))
         menu.addItem(item("Снег ложится на окна", #selector(toggleAccumulate), on: s.accumulate))
         if AXIsProcessTrusted() {
             let dock = item("Снег ложится на Dock", #selector(noop), on: true)
@@ -276,6 +278,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func setTool(_ sender: NSMenuItem) {
         settings.tool = Tool(rawValue: sender.tag) ?? .none
         applyTool()
+    }
+    @objc private func toggleHouse() {
+        settings.house.toggle()
+        world.scene.setEnabled(settings.house)
     }
     @objc private func toggleAccumulate() {
         settings.accumulate.toggle()

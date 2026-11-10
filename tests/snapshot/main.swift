@@ -392,5 +392,21 @@ check(world.areas[0].flakes.count > flakesBefore, "слетевший снег �
 run(0.25)
 render("3-shake", lightWindows: false)
 
+// Пряничный домик с ёлкой и участком.
+print("Пряничный домик:")
+world.scene.setEnabled(true)
+if ProcessInfo.processInfo.environment["SNAP_FILM"] != nil {
+    for k in 0..<8 { run(0.15); render(String(format: "film-house-%02d", k), lightWindows: false) }
+}
+run(1.6)
+check(world.scene.solid && world.surfaces.filter { $0.slope != 0 }.count == 2, "домик вырос, скаты крыши стали кромками")
+run(40)
+check(world.scene.roofLeft.total > 40 && world.scene.roofRight.total > 40,
+      "снег копится на крыше: \(Int(world.scene.roofLeft.total)) и \(Int(world.scene.roofRight.total)) pt²")
+render("5-house", lightWindows: false)
+world.scene.setEnabled(false)
+run(0.8)
+check(!world.scene.solid && world.surfaces.allSatisfy { $0.slope == 0 }, "домик убран, крыша больше не кромка")
+
 print(failures == 0 ? "Все проверки прошли" : "Провалено проверок: \(failures)")
 exit(failures == 0 ? 0 : 1)
