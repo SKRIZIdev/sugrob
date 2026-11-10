@@ -404,6 +404,13 @@ run(40)
 check(world.scene.roofLeft.total > 40 && world.scene.roofRight.total > 40,
       "снег копится на крыше: \(Int(world.scene.roofLeft.total)) и \(Int(world.scene.roofRight.total)) pt²")
 render("5-house", lightWindows: false)
+func roofWidth() -> Float { world.surfaces.first { $0.slope < 0 }.map { $0.b - $0.a } ?? -1 }
+let small = roofWidth()
+world.setHouseScale(1.0)
+let big = roofWidth()
+world.setHouseScale(0.6)
+check(abs(small - 41.4) < 0.5 && abs(big - 69) < 0.5 && abs(roofWidth() - 41.4) < 0.5,
+      "размер домика переключается: скат \(small) → \(big) → \(roofWidth()) pt")
 world.scene.setEnabled(false)
 run(0.8)
 check(!world.scene.solid && world.surfaces.allSatisfy { $0.slope == 0 }, "домик убран, крыша больше не кромка")

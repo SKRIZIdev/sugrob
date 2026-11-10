@@ -22,9 +22,31 @@ final class GingerbreadScene {
 
     // Скаты крыши: от карниза до конька 69 pt по горизонтали, уклон 56/69.
     static let pitch: Float = 56.0 / 69.0
-    let roofLeft = Heightmap(width: 69, maxH: 9)
-    let roofRight = Heightmap(width: 69, maxH: 9)
-    let chimneyTop = Heightmap(width: 20, maxH: 6, endRadius: 5)
+    private(set) var roofLeft = Heightmap(width: 69 * 0.6, maxH: 9 * 0.6)
+    private(set) var roofRight = Heightmap(width: 69 * 0.6, maxH: 9 * 0.6)
+    private(set) var chimneyTop = Heightmap(width: 20 * 0.6, maxH: 6 * 0.6, endRadius: 5 * 0.6)
+    /// Масштаб всей сцены: 1 — полный размер (домик ~140 pt), по умолчанию 0.6 — не отвлекает.
+    private(set) var scale: Float = 0.6
+
+    /// Сменить размер. Скаты пересоздаются под новый размер (снег с них пропадает).
+    /// Возвращает true, если размер поменялся — кромки надо перестроить.
+    @discardableResult
+    func setScale(_ k: Float) -> Bool {
+        guard abs(k - scale) > 0.001 else { return false }
+        scale = k
+        roofLeft = Heightmap(width: 69 * k, maxH: 9 * k)
+        roofRight = Heightmap(width: 69 * k, maxH: 9 * k)
+        chimneyTop = Heightmap(width: 20 * k, maxH: 6 * k, endRadius: 5 * k)
+        return true
+    }
+
+    /// Скаты и труба в глобальных координатах: профиль, x начала, y опоры в начале, уклон, ширина.
+    func roofParts(anchor o: SIMD2<Float>) -> [(map: Heightmap, x: Float, y: Float, slope: Float, width: Float)] {
+        let k = scale
+        return [(roofLeft, o.x - 14 * k, o.y - 64 * k, -Self.pitch, 69 * k),
+                (roofRight, o.x + 55 * k, o.y - 120 * k, Self.pitch, 69 * k),
+                (chimneyTop, o.x + 74 * k, o.y - 142 * k, 0, 20 * k)]
+    }
 
     /// Дорос и не исчезает — крыша принимает снег.
     var solid: Bool { enabled && !dying && t > 1.0 }
@@ -84,11 +106,9 @@ final class GingerbreadScene {
     /// Кромки сцены в глобальных координатах.
     func surfaces(anchor o: SIMD2<Float>) -> [Surface] {
         guard solid else { return [] }
-        return [
-            Surface(a: o.x - 14, b: o.x + 55, y: o.y - 64, originX: o.x - 14, map: roofLeft, window: nil, slope: -Self.pitch),
-            Surface(a: o.x + 55, b: o.x + 124, y: o.y - 120, originX: o.x + 55, map: roofRight, window: nil, slope: Self.pitch),
-            Surface(a: o.x + 74, b: o.x + 94, y: o.y - 142, originX: o.x + 74, map: chimneyTop, window: nil),
-        ]
+        return roofParts(anchor: o).map { r in
+            Surface(a: r.x, b: r.x + r.width, y: r.y, originX: r.x, map: r.map, window: nil, slope: r.slope)
+        }
     }
 
     // MARK: Отрисовка
@@ -119,7 +139,7 @@ final class GingerbreadScene {
             let k = p.age / p.life
             let size = p.s0 + (p.s1 - p.s0) * (1 - (1 - k) * (1 - k))
             let alpha = 0.4 * min(1, p.age / 0.35) * pow(1 - k, 1.4)
-            points.append(PointVertex(pos: o + SIMD2(p.x, p.y), size: size, alpha: alpha, color: SIMD4(0.92, 0.93, 0.96, 3)))
+            points.append(PointVertex(pos: o + SIMD2(p.x, p.y) * scale, size: size * scale, alpha: alpha, color: SIMD4(0.92, 0.93, 0.96, 3)))
         }
     }
 
@@ -134,7 +154,7 @@ final class GingerbreadScene {
     private func drawHouse(_ o: SIMD2<Float>, _ s: Float, _ t: inout [TriVertex], _ pt: inout [PointVertex]) {
         // Растёт от середины основания.
         let pivot = SIMD2<Float>(55, 0)
-        func P(_ x: Float, _ y: Float) -> SIMD2<Float> { o + pivot + (SIMD2(x, y) - pivot) * s }
+        func P(_ x: Float, _ y: Float) -> SIMD2<Float> { o + (pivot + (SIMD2(x, y) - pivot) * s) * scale }
         func rect(_ x0: Float, _ y0: Float, _ x1: Float, _ y1: Float, _ top: SIMD4<Float>, _ low: SIMD4<Float>) {
             quad(&t, P(x0, y0), P(x1, y0), P(x1, y1), P(x0, y1), top, top, low, low)
         }
@@ -148,7 +168,7 @@ final class GingerbreadScene {
             }
         }
         func dot(_ x: Float, _ y: Float, _ size: Float, _ c: SIMD3<Float>, kind: Float, alpha: Float = 1) {
-            pt.append(PointVertex(pos: P(x, y), size: size * s, alpha: alpha, color: SIMD4(c, kind)))
+            pt.append(PointVertex(pos: P(x, y), size: size * s * scale, alpha: alpha, color: SIMD4(c, kind)))
         }
         let flicker = 0.85 + 0.09 * sin(clock * 7.3) + 0.06 * sin(clock * 13.1 + 1.7)
 
@@ -179,8 +199,8 @@ final class GingerbreadScene {
         rect(44, -25, 66, 0, door, doorLow)
         disc(55, -25, 11, door, .pi, 2 * .pi)
         // Скаты крыши — шоколадные полосы с конька к карнизам.
-        roofBand(&t, P(-14, -64), P(55, -120), outward: SIMD2(-0.630, -0.776) * s, thick: 11 * s)
-        roofBand(&t, P(55, -120), P(124, -64), outward: SIMD2(0.630, -0.776) * s, thick: 11 * s)
+        roofBand(&t, P(-14, -64), P(55, -120), outward: SIMD2(-0.630, -0.776), thick: 11 * s * scale)
+        roofBand(&t, P(55, -120), P(124, -64), outward: SIMD2(0.630, -0.776), thick: 11 * s * scale)
         disc(55, -118, 7, choco)
         // Леденцовая трость у двери: полоски и крючок.
         for k in 0..<8 {
@@ -237,9 +257,9 @@ final class GingerbreadScene {
     private func drawTree(_ o: SIMD2<Float>, _ s: Float, _ starLevel: Float, _ lights: Float,
                           _ t: inout [TriVertex], _ pt: inout [PointVertex]) {
         let pivot = SIMD2<Float>(176, 0)
-        func P(_ x: Float, _ y: Float) -> SIMD2<Float> { o + pivot + (SIMD2(x, y) - pivot) * s }
+        func P(_ x: Float, _ y: Float) -> SIMD2<Float> { o + (pivot + (SIMD2(x, y) - pivot) * s) * scale }
         func dot(_ x: Float, _ y: Float, _ size: Float, _ c: SIMD3<Float>, kind: Float, alpha: Float = 1) {
-            pt.append(PointVertex(pos: P(x, y), size: size * s, alpha: alpha, color: SIMD4(c, kind)))
+            pt.append(PointVertex(pos: P(x, y), size: size * s * scale, alpha: alpha, color: SIMD4(c, kind)))
         }
         // Ствол.
         quad(&t, P(171, -14), P(181, -14), P(181, 0), P(171, 0),
@@ -303,7 +323,7 @@ final class GingerbreadScene {
         if starLevel > 0.01 {
             let cx: Float = 176, cy: Float = -126
             let pulse = 0.30 + 0.08 * sin(clock * 2.1)
-            pt.append(PointVertex(pos: P(cx, cy), size: 48 * s * starLevel, alpha: pulse, color: SIMD4(1.0, 0.85, 0.40, 3)))
+            pt.append(PointVertex(pos: P(cx, cy), size: 48 * s * starLevel * scale, alpha: pulse, color: SIMD4(1.0, 0.85, 0.40, 3)))
             let center = SIMD4<Float>(1.0, 0.93, 0.58, 1), tip = SIMD4<Float>(0.98, 0.74, 0.22, 1)
             for k in 0..<5 {
                 let a = -Float.pi / 2 + Float(k) * 2 * .pi / 5
@@ -323,7 +343,7 @@ final class GingerbreadScene {
     /// Участок: пряничный заборчик справа от ёлки — штакетины с глазурью на остриях, две перекладины.
     private func drawFence(_ o: SIMD2<Float>, _ s: Float, _ t: inout [TriVertex], _ pt: inout [PointVertex]) {
         let pivot = SIMD2<Float>(262, 0)
-        func P(_ x: Float, _ y: Float) -> SIMD2<Float> { o + pivot + (SIMD2(x, y) - pivot) * s }
+        func P(_ x: Float, _ y: Float) -> SIMD2<Float> { o + (pivot + (SIMD2(x, y) - pivot) * s) * scale }
         let wood = SIMD4<Float>(0.76, 0.47, 0.25, 1), woodLow = SIMD4<Float>(0.60, 0.35, 0.18, 1)
         // Перекладины — за штакетинами.
         for y in [Float(-9), -20] {
@@ -336,8 +356,8 @@ final class GingerbreadScene {
             t.append(TriVertex(pos: P(x + 8, -26), color: wood))
             t.append(TriVertex(pos: P(x + 4, -33), color: SIMD4(0.82, 0.53, 0.29, 1)))
             // Глазурь на острие и снежок на нём.
-            pt.append(PointVertex(pos: P(x + 4, -31), size: 5.5 * s, alpha: 1, color: SIMD4(icingRGB, 2)))
-            pt.append(PointVertex(pos: P(x + 4, -16), size: 3.2 * s, alpha: 1, color: SIMD4(0.90, 0.16, 0.20, 4)))
+            pt.append(PointVertex(pos: P(x + 4, -31), size: 5.5 * s * scale, alpha: 1, color: SIMD4(icingRGB, 2)))
+            pt.append(PointVertex(pos: P(x + 4, -16), size: 3.2 * s * scale, alpha: 1, color: SIMD4(0.90, 0.16, 0.20, 4)))
         }
     }
 

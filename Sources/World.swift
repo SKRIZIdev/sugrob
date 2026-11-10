@@ -128,7 +128,7 @@ final class SnowWorld {
     let scene = GingerbreadScene()
     private var sceneAnchor: SIMD2<Float> {
         guard let a = areas.first else { return .zero }
-        return SIMD2(Float(a.bounds.minX) + 26, Float(a.bounds.maxY))
+        return SIMD2(Float(a.bounds.minX) + 6 + 20 * scene.scale, Float(a.bounds.maxY))
     }
 
     /// Видимая «стеклянная» плашка Dock относительно рамки списка из Accessibility. Замер по
@@ -400,12 +400,18 @@ final class SnowWorld {
         }
     }
 
+    /// Сменить размер домика (снег с крыши осыпается).
+    func setHouseScale(_ k: Float) {
+        guard abs(k - scene.scale) > 0.001 else { return }
+        dropSceneSnow()
+        scene.setScale(k)
+        rebuildSurfaces()
+        changed = true
+    }
+
     /// Домик убирают — снег с крыши и трубы осыпается.
-    private func dropSceneSnow() {
-        let o = sceneAnchor
-        for (map, x0, y0, k) in [(scene.roofLeft, o.x - 14, o.y - 64, -GingerbreadScene.pitch),
-                                 (scene.roofRight, o.x + 55, o.y - 120, GingerbreadScene.pitch),
-                                 (scene.chimneyTop, o.x + 74, o.y - 142, Float(0))] {
+    func dropSceneSnow() {
+        for (map, x0, y0, k, _) in scene.roofParts(anchor: sceneAnchor) {
             var x: Float = 0
             while x < map.width {
                 let h = map.height(at: x)

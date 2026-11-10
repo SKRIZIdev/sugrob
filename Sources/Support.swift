@@ -117,7 +117,7 @@ final class Settings {
     private init() {
         d.register(defaults: [
             "intensity": Intensity.steady.rawValue, "wind": 0, "gusts": true,
-            "accumulate": true, "cursorPush": true, "paused": false, "house": true,
+            "accumulate": true, "cursorPush": true, "paused": false, "house": true, "houseSize": 0,
         ])
     }
 
@@ -150,6 +150,14 @@ final class Settings {
         get { d.bool(forKey: "house") }
         set { d.set(newValue, forKey: "house") }
     }
+    /// Размер домика: 0 — маленький (по умолчанию), 1 — средний, 2 — большой.
+    var houseSize: Int {
+        get { min(max(d.integer(forKey: "houseSize"), 0), 2) }
+        set { d.set(newValue, forKey: "houseSize") }
+    }
+    static let houseScales: [Float] = [0.6, 0.8, 1.0]
+    static let houseSizeTitles = ["Маленький", "Средний", "Большой"]
+    var houseScale: Float { Settings.houseScales[houseSize] }
     /// Экономный режим вручную: 30 кадров, вдвое меньше снега, кадр в 1x.
     var eco: Bool {
         get { d.bool(forKey: "eco") }

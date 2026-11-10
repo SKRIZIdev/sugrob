@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if args.contains("--fast") { world.depositBoost = 12 }
         setupStatusItem()
         rebuildOverlays()
+        world.setHouseScale(settings.houseScale)
         world.scene.setEnabled(settings.house)
         observe()
         updateEco()
@@ -238,7 +239,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(submenu("Мышь", mouse))
         menu.addItem(.separator())
 
-        menu.addItem(item("Пряничный домик", #selector(toggleHouse), on: s.house))
+        let house = NSMenu()
+        house.addItem(item("Показывать", #selector(toggleHouse), on: s.house))
+        house.addItem(.separator())
+        for (i, title) in Settings.houseSizeTitles.enumerated() {
+            house.addItem(item(title, #selector(setHouseSize(_:)), tag: i, on: s.houseSize == i))
+        }
+        menu.addItem(submenu("Пряничный домик", house))
         menu.addItem(item("Снег ложится на окна", #selector(toggleAccumulate), on: s.accumulate))
         if AXIsProcessTrusted() {
             let dock = item("Снег ложится на Dock", #selector(noop), on: true)
@@ -282,6 +289,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleHouse() {
         settings.house.toggle()
         world.scene.setEnabled(settings.house)
+    }
+    @objc private func setHouseSize(_ sender: NSMenuItem) {
+        settings.houseSize = sender.tag
+        world.setHouseScale(settings.houseScale)
     }
     @objc private func toggleAccumulate() {
         settings.accumulate.toggle()
