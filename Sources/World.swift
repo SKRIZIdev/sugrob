@@ -24,6 +24,7 @@ final class Cap {
     /// Прозрачные поля окна вокруг видимой плашки (у виджетов macOS 26 — 8 pt) и радиус её углов.
     let inset: CGFloat
     let corner: Float
+    var widget: Bool { inset > 0 }
     init(frame: CGRect, maxH: Float, now: Double, inset: CGFloat = 0, corner: Float = 0) {
         self.frame = frame
         self.inset = inset
@@ -55,6 +56,8 @@ struct Surface {
     var endA: Float = 0, endB: Float = 0
     /// Уклон кромки dy/dx (скат крыши домика): опора y + slope·(x − originX), снег — по нормали.
     var slope: Float = 0
+    /// Кромка виджета: снег тускнеет вместе с виджетом, когда фокус не на рабочем столе.
+    var widget = false
 
     /// Точка опоры под x и внешняя нормаль к ней (у прямой кромки — строго вверх).
     @inline(__always) func base(at x: Float) -> (y: Float, nx: Float, ny: Float) {
@@ -126,6 +129,11 @@ final class SnowWorld {
     private var dockRaised = false       // снег сейчас на крыше Dock, а не у кромки под ним
     /// Пряничный домик с ёлкой в левом нижнем углу основного экрана.
     let scene = GingerbreadScene()
+    /// Погрузчик, вывозящий сугроб за правый край экрана.
+    let excavator = Excavator()
+    /// Фокус на рабочем столе: macOS 26 рисует виджеты ярко только тогда, иначе — полупрозрачными.
+    var desktopFocused = true
+    private var widgetAlpha: Float = 1
     private var sceneAnchor: SIMD2<Float> {
         guard let a = areas.first else { return .zero }
         return SIMD2(Float(a.bounds.minX) + 6 + 20 * scene.scale, Float(a.bounds.maxY))
@@ -416,7 +424,18 @@ final class SnowWorld {
         }
     }
 
-    init() { connectScene() }
+    init() {
+        connectScene()
+        excavator.groundTop = scene.groundTop
+        excavator.carve = { [unowned self] x, half, frac in
+            guard let a = self.areas.first else { return 0 }
+            self.changed = true
+            return a.ground.carve(at: x - Float(a.bounds.minX), halfWidth: half, fraction: frac)
+        }
+        excavator.spill = { [unowned self] p, v in
+            self.emitOne(x: p.x, y: p.y, vx: v.x, vy: v.y, stick: 0)
+        }
+    }
 
     /// Сменить размер домика (снег с крыши осыпается).
     func setHouseScale(_ k: Float) {
@@ -515,7 +534,8 @@ final class SnowWorld {
                 for s in segments(f, hiddenBy: dockRects + wins.filter { $0.0 != id }.map { $0.1 }) {
                     list.append(Surface(a: Float(s.0), b: Float(s.1), y: Float(f.minY),
                                         originX: Float(f.minX), map: cap.map, window: id,
-                                        corner: cap.corner, endA: Float(f.minX), endB: Float(f.maxX)))
+                                        corner: cap.corner, endA: Float(f.minX), endB: Float(f.maxX),
+                                        widget: cap.widget))
                 }
             }
         }
@@ -547,6 +567,14 @@ final class SnowWorld {
         let p = settings.intensity
         let wind = settings.wind.speed + gust
         scene.anchor = sceneAnchor
+        if let a = areas.first {
+            excavator.bounds = (Float(a.bounds.minX), Float(a.bounds.maxX))
+            excavator.leftLimit = scene.enabled ? sceneAnchor.x + 320 * scene.scale : Float(a.bounds.minX)
+        }
+        if excavator.step(dt) { changed = true }
+        // Снег на виджетах тускнеет и проявляется вместе с ними.
+        let wTarget: Float = desktopFocused ? 1 : 0.3
+        if abs(widgetAlpha - wTarget) > 0.005 { widgetAlpha += (wTarget - widgetAlpha) * min(1, dt * 5); changed = true }
         let (sceneActive, sceneSolid) = scene.step(dt, wind: wind)
         if sceneSolid {
             if !scene.solid { dropSceneSnow() }
@@ -1083,9 +1111,11 @@ final class SnowWorld {
         let x0 = Float(a.bounds.minX), x1 = Float(a.bounds.maxX)
         // Домик рисуется первым: сугроб у кромки прикрывает его основание, снег на крыше — поверх.
         if !dockLayer, a === areas.first, scene.visible { scene.draw(anchor: sceneAnchor, tris: &tris, points: &points) }
+        if !dockLayer, a === areas.first, excavator.visible { excavator.draw(tris: &tris, points: &points) }
         for s in a.surfaces where s.isDock == dockLayer {
             appendCap(s, max(s.a, x0), min(s.b, x1), &tris,
-                      scale: s.isDock ? dockLook.scale : 1, alpha: s.isDock ? dockLook.alpha : 1)
+                      scale: s.isDock ? dockLook.scale : 1,
+                      alpha: s.isDock ? dockLook.alpha : (s.widget ? widgetAlpha : 1))
         }
         if !dockLayer, a === areas.first { appendRoofRounding(&tris) }
         if !dockLayer { appendCap(a.groundSurface, x0, x1, &tris) }

@@ -14,6 +14,8 @@ struct TrackedWindow {
 final class WindowTracker {
     private let ownPID = ProcessInfo.processInfo.processIdentifier
     private var bundles: [pid_t: String] = [:]
+    /// Сколько обычных окон Finder на экране при последнем опросе.
+    private(set) var finderWindows = 0
 
     /// Окна, на которые может лечь снег, спереди назад.
     func poll() -> [TrackedWindow] {
@@ -22,6 +24,8 @@ final class WindowTracker {
         }
         var out: [TrackedWindow] = []
         out.reserveCapacity(48)
+        var finder = 0
+        defer { finderWindows = finder }
         for info in raw {
             guard let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, pid != ownPID,
                   let id = (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
@@ -34,6 +38,7 @@ final class WindowTracker {
             let kind: TrackedWindow.Kind
             if layer == 0 {
                 kind = .normal
+                if bundleID(pid) == "com.apple.finder" { finder += 1 }
             } else {
                 let bundle = bundleID(pid)
                 if bundle == "com.apple.notificationcenterui", layer < 0, frame.width < 800, frame.height < 800 {

@@ -27,6 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rebuildOverlays()
         world.setHouseScale(settings.houseScale)
         world.scene.setEnabled(settings.house)
+        world.step(dt: 0.001)                     // экскаватору нужны границы экрана
+        world.excavator.setEnabled(settings.excavator)
         observe()
         updateEco()
         startLink()
@@ -74,6 +76,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if dragging || now >= nextPoll {
             if world.syncWindows(tracker.poll(), now: now) { fastPollUntil = now + 0.5 }
             nextPoll = now < fastPollUntil ? now : now + 1.0 / 6
+            // Рабочий стол в фокусе (виджеты яркие): впереди Finder без окон или сам Сугроб.
+            let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            world.desktopFocused = (front == "com.apple.finder" && tracker.finderWindows == 0) || front == Bundle.main.bundleIdentifier
         }
         // Dock: пока он на экране или курсор у нижней кромки (сейчас выедет) — каждый кадр,
         // чтобы снег ехал вместе с ним; иначе 4 раза в секунду.
@@ -246,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             house.addItem(item(title, #selector(setHouseSize(_:)), tag: i, on: s.houseSize == i))
         }
         menu.addItem(submenu("Пряничный домик", house))
+        menu.addItem(item("Экскаватор", #selector(toggleExcavator), on: s.excavator))
         menu.addItem(item("Снег ложится на окна", #selector(toggleAccumulate), on: s.accumulate))
         if AXIsProcessTrusted() {
             let dock = item("Снег ложится на Dock", #selector(noop), on: true)
@@ -289,6 +295,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleHouse() {
         settings.house.toggle()
         world.scene.setEnabled(settings.house)
+    }
+    @objc private func toggleExcavator() {
+        settings.excavator.toggle()
+        world.excavator.setEnabled(settings.excavator)
     }
     @objc private func setHouseSize(_ sender: NSMenuItem) {
         settings.houseSize = sender.tag

@@ -444,5 +444,42 @@ check(seen == ["opening", "walkOut", "wave", "dig", "walkBack", "entering", "clo
 check(snowAfter < snowBefore * 0.75, "расчистил сугроб у дома: \(Int(snowBefore)) → \(Int(snowAfter))")
 Settings.shared.paused = false
 
+// Экскаватор: въезжает справа, сгребает сугроб в кучу фиксированного размера, высыпает за правый край, уезжает.
+print("Экскаватор:")
+Settings.shared.paused = true
+let ar = world.areas[0]
+var gx = Float(ar.bounds.minX)
+while gx < Float(ar.bounds.maxX) { ar.ground.deposit(at: gx - Float(ar.bounds.minX), area: 2.5 * 10); gx += 2.5 }
+run(0.5)
+let groundFull = ar.ground.total
+world.excavator.setEnabled(true)
+var exPhases: [String] = []
+var maxLoad: Float = 0, flewOut = 0, exFrames = 0
+let filmEx = ProcessInfo.processInfo.environment["SNAP_FILM"] != nil
+while exFrames < 60 * 90 {
+    run(1.0 / 60); exFrames += 1
+    let ph = world.excavator.phaseName
+    if exPhases.last != ph {
+        exPhases.append(ph)
+        if filmEx && ["carrying", "dumping"].contains(ph) { run(0.5); exFrames += 30; render("ex-\(ph)", lightWindows: false) }
+    }
+    if filmEx && exFrames == 240 { render("ex-collecting", lightWindows: false) }
+    maxLoad = max(maxLoad, world.excavator.load)
+    flewOut = max(flewOut, ar.flakes.filter { $0.x > Float(ar.bounds.maxX) }.count)
+    if ph == "resting" { break }
+}
+check(exPhases.starts(with: ["arriving", "collecting"]) && exPhases.contains("dumping") && exPhases.last == "resting",
+      "экскаватор: \(exPhases.joined(separator: " → ")) за \(exFrames / 60) с")
+check(maxLoad >= world.excavator.capacity - 1, "набрал полный ковш: \(Int(maxLoad)) из \(Int(world.excavator.capacity)) pt²")
+check(flewOut > 10, "снег из ковша улетел за правый край: \(flewOut) снежинок за экраном")
+check(ar.ground.total < groundFull - world.excavator.capacity * 0.8, "сугроб убыл: \(Int(groundFull)) → \(Int(ar.ground.total)) pt²")
+world.excavator.comeBackNow()
+run(0.2)
+check(world.excavator.phaseName == "arriving", "после отдыха въезжает снова: \(world.excavator.phaseName)")
+world.excavator.setEnabled(false)
+run(3)
+check(!world.excavator.visible, "выключили — уехал за край и пропал")
+Settings.shared.paused = false
+
 print(failures == 0 ? "Все проверки прошли" : "Провалено проверок: \(failures)")
 exit(failures == 0 ? 0 : 1)

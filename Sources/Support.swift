@@ -117,7 +117,7 @@ final class Settings {
     private init() {
         d.register(defaults: [
             "intensity": Intensity.steady.rawValue, "wind": 0, "gusts": true,
-            "accumulate": true, "cursorPush": true, "paused": false, "house": true, "houseSize": 0,
+            "accumulate": true, "cursorPush": true, "paused": false, "house": true, "houseSize": 0, "excavator": true,
         ])
     }
 
@@ -149,6 +149,11 @@ final class Settings {
     var house: Bool {
         get { d.bool(forKey: "house") }
         set { d.set(newValue, forKey: "house") }
+    }
+    /// Экскаватор, вывозящий сугроб за край экрана (по умолчанию включён).
+    var excavator: Bool {
+        get { d.bool(forKey: "excavator") }
+        set { d.set(newValue, forKey: "excavator") }
     }
     /// Размер домика: 0 — маленький (по умолчанию), 1 — средний, 2 — большой.
     var houseSize: Int {
