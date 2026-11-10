@@ -18,11 +18,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var enabled = true
     private var asleep = false
     private var keyMonitor: Any?
+    private var axTrusted: Bool?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let args = ProcessInfo.processInfo.arguments
         if args.contains("--fast") { world.depositBoost = 12 }
-        NSLog("Sugrob: запуск, доступ «Универсальный доступ» = %@", AXIsProcessTrusted() ? "есть" : "нет")
         setupStatusItem()
         rebuildOverlays()
         observe()
@@ -81,6 +81,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if world.dockShown || nearBottom || now >= nextDockPoll {
             world.setDock(tracker.dockFrame(), now: now)
             nextDockPoll = now + 0.25
+            // Для диагностики: `defaults read com.ivan.sugrob diag.axTrusted`.
+            let ax = AXIsProcessTrusted()
+            if ax != axTrusted { axTrusted = ax; UserDefaults.standard.set(ax, forKey: "diag.axTrusted") }
         }
         world.step(dt: Float(dt))
         if world.needsRedraw {
