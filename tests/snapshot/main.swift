@@ -461,6 +461,9 @@ while exFrames < 60 * 90 {
     let ph = world.excavator.phaseName
     if exPhases.last != ph {
         exPhases.append(ph)
+        if ProcessInfo.processInfo.environment["SNAP_DEBUG"] != nil {
+            print(String(format: "    %5.1fс %@ %@", Float(exFrames) / 60, ph, world.excavator.debugState))
+        }
         if filmEx && ["carrying", "dumping"].contains(ph) { run(0.5); exFrames += 30; render("ex-\(ph)", lightWindows: false) }
     }
     if filmEx && exFrames == 240 { render("ex-collecting", lightWindows: false) }
@@ -468,14 +471,20 @@ while exFrames < 60 * 90 {
     flewOut = max(flewOut, ar.flakes.filter { $0.x > Float(ar.bounds.maxX) }.count)
     if ph == "resting" { break }
 }
-check(exPhases.starts(with: ["arriving", "collecting"]) && exPhases.contains("dumping") && exPhases.last == "resting",
-      "экскаватор: \(exPhases.joined(separator: " → ")) за \(exFrames / 60) с")
+let dumps = exPhases.filter { $0 == "dumping" }.count
+let visit = Float(exFrames) / 60
+check(exPhases.starts(with: ["arriving", "collecting"]) && dumps >= 2 && exPhases.last == "resting" && visit >= 14 && visit <= 26,
+      "экскаватор работал \(String(format: "%.1f", visit)) с и высыпал \(dumps) раз: \(exPhases.joined(separator: " → "))")
 check(maxLoad >= world.excavator.capacity - 1, "набрал полный ковш: \(Int(maxLoad)) из \(Int(world.excavator.capacity)) pt²")
 check(flewOut > 10, "снег из ковша улетел за правый край: \(flewOut) снежинок за экраном")
 check(ar.ground.total < groundFull - world.excavator.capacity * 0.8, "сугроб убыл: \(Int(groundFull)) → \(Int(ar.ground.total)) pt²")
+var restFrames = 0
+while world.excavator.phaseName == "resting" && restFrames < 60 * 60 { run(1.0 / 60); restFrames += 1 }
+let period = visit + Float(restFrames) / 60
+check(period > 37 && period < 44, "следующий приезд через \(String(format: "%.1f", period)) с от начала прошлого")
 world.excavator.comeBackNow()
 run(0.2)
-check(world.excavator.phaseName == "arriving", "после отдыха въезжает снова: \(world.excavator.phaseName)")
+check(["arriving", "collecting"].contains(world.excavator.phaseName), "после отдыха въезжает снова: \(world.excavator.phaseName)")
 world.excavator.setEnabled(false)
 run(3)
 check(!world.excavator.visible, "выключили — уехал за край и пропал")

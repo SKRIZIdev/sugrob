@@ -1,9 +1,10 @@
 import Foundation
 import simd
 
-/// Маленький погрузчик с ковшом. Въезжает справа и, едучи налево, сгребает сугроб у нижней кромки в кучу
-/// фиксированного размера; набрал (или упёрся в пряничный домик) — разворачивается, везёт кучу к правому
-/// краю, опрокидывает ковш — снег летит за экран — и сам уезжает за край. Через 8–18 с въезжает снова.
+/// Маленький погрузчик с ковшом. Приезжает справа раз в ~40 с и ~15 с убирает снег: едучи налево,
+/// сгребает сугроб у нижней кромки в кучу фиксированного размера; набрал (или упёрся в пряничный домик) —
+/// разворачивается, везёт к правому краю, опрокидывает ковш — снег летит за экран — и едет за следующей
+/// порцией. Время вышло — отвозит последнюю порцию и уезжает за край.
 /// Колёса крутятся, корпус наклоняется по неровностям сугроба, мигает маячок, из трубы дымок.
 final class Excavator {
     enum Phase { case arriving, collecting, carrying, dumping, turning, leaving, resting, gone }
@@ -17,7 +18,15 @@ final class Excavator {
     /// Сколько снега в ковше, pt².
     private(set) var load: Float = 0
     /// Фиксированный размер кучи: набрал — везёт выбрасывать.
-    let capacity: Float = 650
+    let capacity: Float = 1500
+    /// Ковш крупнее машины «по чертежу».
+    private let bucketSize: Float = 1.3
+    /// Сколько длится одна уборка и как часто он приезжает.
+    let workTime: Float = 15
+    let visitEvery: Float = 40
+    private var workLeft: Float = 0
+    private var speed: Float = 24
+    private var visitStart: Float = 0
     let scale: Float = 0.75
     private var clock: Float = 0
     private var wheel: Float = 0
@@ -38,6 +47,7 @@ final class Excavator {
 
     var visible: Bool { phase != .gone && phase != .resting }
     var phaseName: String { "\(phase)" }
+    var debugState: String { String(format: "x=%.0f груз=%.0f осталось=%.1fс скорость=%.0f", x, load, workLeft, speed) }
     private var half: Float { 30 * scale }
 
     func setEnabled(_ on: Bool) {
@@ -46,7 +56,7 @@ final class Excavator {
             guard phase == .gone || phase == .leaving || phase == .resting else { return }
             if phase != .leaving { x = bounds.maxX + half + 30 }
             dir = -1
-            go(.arriving)
+            startVisit()
         } else if phase == .resting {
             go(.gone)
         } else if phase != .gone {
@@ -60,12 +70,19 @@ final class Excavator {
 
     private func go(_ p: Phase) { phase = p; phaseT = 0 }
 
+    private func startVisit() {
+        workLeft = workTime
+        visitStart = clock
+        go(.arriving)
+    }
+
     /// Шаг. Возвращает true, если надо перерисовать.
     func step(_ dt: Float) -> Bool {
         guard phase != .gone else { return false }
         if phase == .resting {
             phaseT += dt
-            if phaseT >= restFor { x = bounds.maxX + half + 30; dir = -1; go(.arriving) }
+            clock += dt
+            if phaseT >= restFor { x = bounds.maxX + half + 30; dir = -1; startVisit() }
             return false
         }
         clock += dt
@@ -75,7 +92,8 @@ final class Excavator {
             wheel += dir * v * dt / (7 * scale)
         }
         func ease(_ cur: inout Float, _ to: Float, _ rate: Float) { cur += (to - cur) * min(1, dt * rate) }
-        let lipReach = (half + 12 * scale)
+        let lipReach = half + 12 * bucketSize * scale
+        if phase == .collecting || phase == .carrying || phase == .dumping || phase == .turning { workLeft -= dt }
         let leftWall = max(bounds.minX, leftLimit)
 
         switch phase {
@@ -86,17 +104,22 @@ final class Excavator {
 
         case .collecting:
             ease(&arm, 0, 5); ease(&tilt, 0, 5)
-            drive(24)
-            // Ковш у земли скребёт сугроб перед собой.
+            drive(speed)
+            // Ковш у земли снимает сугроб слоями перед собой, а не выкапывает яму в одном месте.
+            // Где снега нет (уже расчищено) — едет быстрее, где есть — сбавляет ход и сгребает.
+            var got: Float = 0
             if arm < 0.15, let carve {
                 let lip = x + dir * lipReach
-                load = min(capacity, load + carve(lip, 6 * scale, min(1, 24 * dt / 8)))
+                got = carve(lip, 7.5 * bucketSize * scale, min(1, 24 * dt / 9))
+                load = min(capacity, load + got)
             }
+            ease(&speed, got / max(dt, 0.001) > 40 ? 30 : 60, 3)
             let atLeft = dir < 0 && x - lipReach <= leftWall + 2
             let atRight = dir > 0 && x + lipReach >= bounds.maxX - 2
-            if load >= capacity {
-                // Полный ковш — везёт к правому краю.
-                if dir > 0 { go(.carrying) } else { nextDir = 1; go(.turning) }
+            if load >= capacity || workLeft <= 0 {
+                // Полный ковш или время вышло — к правому краю (пустым — просто уезжает).
+                if load < 1 && workLeft <= 0 { dir = 1; go(.leaving) }
+                else if dir > 0 { go(.carrying) } else { nextDir = 1; go(.turning) }
             } else if atLeft {
                 nextDir = 1
                 go(.turning)                      // упёрся в домик — разворачивается и сгребает обратно
@@ -106,7 +129,7 @@ final class Excavator {
 
         case .carrying:
             ease(&arm, 0.55, 4); ease(&tilt, -0.5, 4)
-            drive(40)
+            drive(70)
             let edge = dir > 0 ? x + lipReach >= bounds.maxX - 2 : x - lipReach <= bounds.minX + 2
             if edge { go(.dumping) }
 
@@ -124,13 +147,17 @@ final class Excavator {
                     spill?(lip, SIMD2(dir * rng.range(130...240), rng.range(-90 ... 10)))
                 }
             }
-            if phaseT > 1.2 { load = 0; dir = 1; go(.leaving) }      // высыпал — и уехал за край
+            if phaseT > 1.2 {
+                load = 0
+                // Время ещё есть — за следующей порцией, иначе уезжает за край.
+                if workLeft > 0 { nextDir = -1; go(.turning) } else { dir = 1; go(.leaving) }
+            }
 
         case .turning:
             ease(&arm, 0.3, 4); ease(&tilt, -0.2, 4)
             if phaseT > 0.5 {
                 dir = nextDir
-                go(load >= capacity ? .carrying : .collecting)
+                go(load >= capacity || (workLeft <= 0 && dir > 0) ? .carrying : .collecting)
             }
 
         case .leaving:
@@ -138,7 +165,8 @@ final class Excavator {
             drive(enabled ? 45 : 70)
             if x > bounds.maxX + half + 40 || x < bounds.minX - half - 40 {
                 load = 0
-                if enabled { restFor = rng.range(8...18); go(.resting) } else { go(.gone) }
+                // Следующий приезд — через ~40 с от начала этого.
+                if enabled { restFor = max(8, visitEvery - (clock - visitStart)); go(.resting) } else { go(.gone) }
             }
 
         case .resting:
@@ -146,7 +174,7 @@ final class Excavator {
             if phaseT >= restFor {
                 x = bounds.maxX + half + 30
                 dir = -1
-                go(.arriving)
+                startVisit()
             }
 
         case .gone:
@@ -173,8 +201,8 @@ final class Excavator {
     private var hinge: SIMD2<Float> { SIMD2(30 + 2 * arm, -8 - 22 * arm) }
 
     private func bucketPoint(_ p: SIMD2<Float>) -> SIMD2<Float> {
-        let c = cos(tilt), s = sin(tilt)
-        return hinge + SIMD2(p.x * c - p.y * s, p.x * s + p.y * c)
+        let c = cos(tilt), s = sin(tilt), q = p * bucketSize
+        return hinge + SIMD2(q.x * c - q.y * s, q.x * s + q.y * c)
     }
 
     private func bucketLip() -> SIMD2<Float> {
@@ -247,7 +275,7 @@ final class Excavator {
         if load > 1 {
             let q = min(1, load / capacity)
             let top = bucketPoint(SIMD2(7, 1.5))
-            let w: Float = 7.5, hh: Float = 2 + 7 * q
+            let w: Float = 7.5 * bucketSize, hh: Float = (2 + 7 * q) * bucketSize
             let snowTop = SIMD4<Float>(0.99, 0.99, 1.0, 1), snowLow = SIMD4<Float>(0.84, 0.88, 0.95, 1)
             let n = 12
             let c = cos(tilt), s = sin(tilt)
