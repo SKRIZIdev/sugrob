@@ -133,6 +133,8 @@ final class ScreenRenderer: NSObject, MTKViewDelegate {
     private var ring: [(points: MTLBuffer, tris: MTLBuffer)] = []
     private var slot = 0
     private let inflight = DispatchSemaphore(value: 3)
+    /// Пикселей кадра на точку экрана.
+    var scale: Float = 1.5
 
     init(area: ScreenArea, world: SnowWorld) {
         self.area = area
@@ -167,7 +169,7 @@ final class ScreenRenderer: NSObject, MTKViewDelegate {
         }
         var u = Uniforms(origin: SIMD2(Float(area.bounds.minX), Float(area.bounds.minY)),
                          size: SIMD2(Float(area.bounds.width), Float(area.bounds.height)),
-                         scale: Float(view.window?.backingScaleFactor ?? 2))
+                         scale: scale)
         enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
         // Порядок слоёв: сугробы → шары → морковки → угольки и снежинки.
         if r.caps > 0 {

@@ -3,7 +3,7 @@
 import AppKit
 import Metal
 
-let W: CGFloat = 1470, H: CGFloat = 956, S: CGFloat = 2
+let W: CGFloat = 1470, H: CGFloat = 956, S: CGFloat = CGFloat(Double(ProcessInfo.processInfo.environment["SNAP_SCALE"] ?? "2") ?? 2)
 let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "."
 var failures = 0
 func check(_ ok: Bool, _ what: String) {

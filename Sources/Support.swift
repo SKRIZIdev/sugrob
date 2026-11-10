@@ -145,6 +145,11 @@ final class Settings {
         get { d.bool(forKey: "paused") }
         set { d.set(newValue, forKey: "paused") }
     }
+    /// Экономный режим вручную: 30 кадров, вдвое меньше снега, кадр в 1x.
+    var eco: Bool {
+        get { d.bool(forKey: "eco") }
+        set { d.set(newValue, forKey: "eco") }
+    }
     /// Инструмент не сохраняется: режим лепки перехватывает мышь, и после перезапуска
     /// экран не должен оказаться занятым.
     var tool: Tool = .none

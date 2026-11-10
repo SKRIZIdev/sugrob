@@ -54,17 +54,24 @@ final class Overlay {
         view.isPaused = true
         view.enableSetNeedsDisplay = false
         view.framebufferOnly = true
-        view.autoResizeDrawable = true
+        view.autoResizeDrawable = false
         view.wantsLayer = true
         view.layer?.isOpaque = false
         view.layer?.backgroundColor = .clear
-        // Два кадровых буфера вместо трёх: на Retina это минус ~22 МБ на экран.
-        (view.layer as? CAMetalLayer)?.maximumDrawableCount = 2
         renderer = ScreenRenderer(area: area, world: world)
         view.delegate = renderer
         view.world = world
         window.contentView = view
+        setRenderScale(eco: world.eco)
         window.orderFrontRegardless()
+    }
+
+    /// Снег мягкий — полная Retina ему не нужна. 1.5x на глаз не отличить от 2x, а кадр
+    /// весит 12.6 МБ вместо 22.5 МБ; в режиме энергосбережения — 1x.
+    func setRenderScale(eco: Bool) {
+        let scale = min(screen.backingScaleFactor, eco ? 1 : 1.5)
+        renderer.scale = Float(scale)
+        view.drawableSize = CGSize(width: screen.frame.width * scale, height: screen.frame.height * scale)
     }
 
     func setInteractive(_ on: Bool) {

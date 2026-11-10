@@ -63,11 +63,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lastMouse = m
         world.mouse = m
 
-        // Окна опрашиваем 12 раз в секунду, а пока что-то двигается — каждый кадр,
-        // чтобы снег не отставал от перетаскиваемого окна.
-        if now >= nextPoll {
-            if world.syncWindows(tracker.poll(), now: now) { fastPollUntil = now + 0.7 }
-            nextPoll = now < fastPollUntil ? now : now + 1.0 / 12
+        // Опрос окон — самое дорогое в цикле (~4 мс). В покое 6 раз в секунду; пока зажата
+        // кнопка мыши (окно могут тащить) или что-то только что двигалось — каждый кадр,
+        // чтобы снег не отставал от окна.
+        let dragging = NSEvent.pressedMouseButtons != 0
+        if dragging || now >= nextPoll {
+            if world.syncWindows(tracker.poll(), now: now) { fastPollUntil = now + 0.5 }
+            nextPoll = now < fastPollUntil ? now : now + 1.0 / 6
         }
         if now >= nextDockPoll {
             world.setDock(tracker.dockFrame(), now: now)
@@ -124,11 +126,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Режим энергосбережения или перегрев — вдвое меньше снега и 30 кадров в секунду.
+    /// Экономный режим (вручную, при энергосбережении или перегреве) — вдвое меньше снега,
+    /// 30 кадров в секунду, кадр в 1x.
     private func updateEco() {
         let info = ProcessInfo.processInfo
-        world.eco = info.isLowPowerModeEnabled || info.thermalState == .serious || info.thermalState == .critical
+        world.eco = settings.eco || info.isLowPowerModeEnabled || info.thermalState == .serious || info.thermalState == .critical
         link?.preferredFrameRateRange = frameRange
+        for o in overlays { o.setRenderScale(eco: world.eco) }
     }
 
     // MARK: Инструменты
@@ -201,6 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(item("Убрать весь снег", #selector(shovel)))
         menu.addItem(.separator())
+        menu.addItem(item("Экономный режим", #selector(toggleEco), on: settings.eco))
         menu.addItem(item("Запускать при входе", #selector(toggleLogin), on: SMAppService.mainApp.status == .enabled))
         menu.addItem(item(enabled ? "Спрятать снег" : "Показать снег", #selector(toggleEnabled)))
         menu.addItem(item("Выйти", #selector(quit), key: "q"))
@@ -239,6 +244,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
     }
     @objc private func shovel() { world.shovel() }
+    @objc private func toggleEco() {
+        settings.eco.toggle()
+        updateEco()
+    }
     @objc private func toggleLogin() {
         do {
             if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() }
