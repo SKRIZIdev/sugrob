@@ -21,11 +21,21 @@ final class Cap {
     var lastSync: Double
     var visible = true
     var spill: Float = 0
-    init(frame: CGRect, maxH: Float, now: Double, endRadius: Float = 0) {
+    /// Прозрачные поля окна вокруг видимой плашки (у виджетов macOS 26 — 8 pt) и радиус её углов.
+    let inset: CGFloat
+    let corner: Float
+    init(frame: CGRect, maxH: Float, now: Double, inset: CGFloat = 0, corner: Float = 0) {
         self.frame = frame
-        map = Heightmap(width: Float(frame.width), maxH: maxH, endRadius: endRadius)
+        self.inset = inset
+        self.corner = corner
+        map = Heightmap(width: Float(frame.width - 2 * inset), maxH: maxH, endRadius: corner)
         lastSeen = now
         lastSync = now
+    }
+    /// Видимая плашка: на её верх ложится снег.
+    var platter: CGRect {
+        CGRect(x: frame.minX + inset, y: frame.minY + inset,
+               width: max(1, frame.width - 2 * inset), height: max(1, frame.height - 2 * inset))
     }
 }
 
@@ -40,13 +50,16 @@ struct Surface {
     /// Радиус скругления концов (Dock). Снег у концов лежит не на прямой, а по дуге угла и
     /// толщину набирает по нормали — облегает угол, а не висит над ним.
     var corner: Float = 0
+    /// Настоящие края плашки: видимый кусок кромки может быть обрезан окном спереди,
+    /// но скругляются только настоящие углы.
+    var endA: Float = 0, endB: Float = 0
 
     /// Точка опоры под x и внешняя нормаль к ней (у прямой кромки — строго вверх).
     @inline(__always) func base(at x: Float) -> (y: Float, nx: Float, ny: Float) {
         guard corner > 0 else { return (y, 0, -1) }
         let r = corner
         let cx: Float
-        if x - a < r { cx = a + r } else if b - x < r { cx = b - r } else { return (y, 0, -1) }
+        if x - endA < r { cx = endA + r } else if endB - x < r { cx = endB - r } else { return (y, 0, -1) }
         let dx = max(-r, min(r, x - cx))
         let dy = (r * r - dx * dx).squareRoot()
         return (y + r - dy, dx / r, -dy / r)
@@ -65,6 +78,9 @@ struct Ball {
     var held = false, rolling = false, resting = false
     var window: CGWindowID? = nil
     var onDock = false          // стоит на Dock (сам или в стопке) — рисуется слоем Dock
+    var vx: Float = 0
+    var flying = false          // брошен — летит по дуге
+    var dead = false            // разбился, удаляется в конце шага
     var off = SIMD2<Float>(0, 0)
     var grab = SIMD2<Float>(0, 0)
     var r: Float { (area / .pi).squareRoot() }
@@ -187,7 +203,7 @@ final class SnowWorld {
                 let old = cap.frame
                 if old != w.frame {
                     moved = true
-                    if abs(old.width - w.frame.width) > 0.5 { cap.map.resize(width: Float(w.frame.width)) }
+                    if abs(old.width - w.frame.width) > 0.5 { cap.map.resize(width: Float(w.frame.width - 2 * cap.inset)) }
                     let dt = max(now - cap.lastSync, 1.0 / 120)
                     let vx = Float((w.frame.minX - old.minX) / dt), vy = Float((w.frame.minY - old.minY) / dt)
                     cap.frame = w.frame
@@ -203,8 +219,11 @@ final class SnowWorld {
                 cap.lastSeen = now
                 cap.lastSync = now
             } else {
-                caps[w.id] = Cap(frame: w.frame, maxH: w.kind == .widget ? 12 : 16, now: now,
-                                 endRadius: w.kind == .widget ? 16 : 10)
+                // Виджет: окно на 8 pt больше видимой плашки, углы плашки — 28 pt (замер 10.11).
+                // Обычное окно стоит перед слоем снега, и снег на его углу с запасом прячется за ним.
+                caps[w.id] = w.kind == .widget
+                    ? Cap(frame: w.frame, maxH: 12, now: now, inset: 8, corner: 28)
+                    : Cap(frame: w.frame, maxH: 16, now: now, corner: 12)
                 moved = true
             }
         }
@@ -228,7 +247,7 @@ final class SnowWorld {
         }
         dockTarget = f
         if dock == nil || dockArea !== a {
-            dock = Cap(frame: SnowWorld.platter(f), maxH: 12, now: now, endRadius: SnowWorld.dockCorner)
+            dock = Cap(frame: SnowWorld.platter(f), maxH: 12, now: now, corner: SnowWorld.dockCorner)
             dock?.visible = false
             dockArea = a
             dockTop = min(Float(SnowWorld.platter(f).minY), Float(a.bounds.maxY))
@@ -416,7 +435,7 @@ final class SnowWorld {
     func rebuildSurfaces() {
         var list: [Surface] = []
         var wins: [(CGWindowID, CGRect)] = []
-        for id in order { if let c = caps[id], c.visible { wins.append((id, c.frame)) } }
+        for id in order { if let c = caps[id], c.visible { wins.append((id, c.platter)) } }
         let dockFrame: CGRect? = dock?.visible == true ? dock?.frame : nil
 
         func segments(_ f: CGRect, hiddenBy occluders: [CGRect]) -> [(CGFloat, CGFloat)] {
@@ -432,7 +451,7 @@ final class SnowWorld {
             // Снег на Dock рисуется своим слоем прямо над Dock — окна его не закрывают.
             list.append(Surface(a: Float(df.minX), b: Float(df.maxX), y: Float(df.minY),
                                 originX: Float(df.minX), map: d.map, window: nil, isDock: true,
-                                corner: SnowWorld.dockCorner))
+                                corner: SnowWorld.dockCorner, endA: Float(df.minX), endB: Float(df.maxX)))
         }
         // Слой снега лежит под всеми окнами: шапку над кромкой прячет любое окно, виджет или Dock,
         // занявшие полосу над ней, — снег виден только на открытом рабочем столе.
@@ -442,7 +461,8 @@ final class SnowWorld {
                 guard let cap = caps[id] else { continue }
                 for s in segments(f, hiddenBy: dockRects + wins.filter { $0.0 != id }.map { $0.1 }) {
                     list.append(Surface(a: Float(s.0), b: Float(s.1), y: Float(f.minY),
-                                        originX: Float(f.minX), map: cap.map, window: id))
+                                        originX: Float(f.minX), map: cap.map, window: id,
+                                        corner: cap.corner, endA: Float(f.minX), endB: Float(f.maxX)))
                 }
             }
         }
@@ -586,8 +606,9 @@ final class SnowWorld {
             cap.spill += l + r
             if cap.spill > 7 {
                 let left = l >= r
-                let x = Float(left ? cap.frame.minX : cap.frame.maxX) + (left ? -2 : 2)
-                emit(x: x, y: Float(cap.frame.minY) - 2, vx: left ? -14 : 14, vy: 12, area: cap.spill, spread: 1.5)
+                let pl = cap.platter
+                let x = Float(left ? pl.minX : pl.maxX) + (left ? -2 : 2)
+                emit(x: x, y: Float(pl.minY) + cap.corner * 0.6, vx: left ? -14 : 14, vy: 12, area: cap.spill, spread: 1.5)
                 cap.spill = 0
             }
         }
@@ -618,7 +639,7 @@ final class SnowWorld {
         let count = min(40, Int(removed / 7))
         guard count > 0 else { map.scale(1 - frac); changed = true; return }
         let step = max(1, map.h.count / count)
-        let x0 = Float(cap.frame.minX), y0 = Float(cap.frame.minY)
+        let x0 = Float(cap.platter.minX), y0 = Float(cap.platter.minY)
         var i = Int(rng.unit() * Float(step))
         while i < map.h.count {
             if map.h[i] > 0.3 {
@@ -721,7 +742,8 @@ final class SnowWorld {
         var active = false
         let floor = areas.map { Float($0.bounds.maxY) }.max() ?? 3000
         for i in balls.indices {
-            if balls[i].held { active = true; continue }
+            if balls[i].held || balls[i].dead { active = true; continue }
+            if balls[i].flying { active = true; fly(i, dt); continue }
             // Снеговик на сорвавшемся с Dock пласте падает вместе с ним (двигает stepSlab).
             if dockSlab != nil && balls[i].onDock { active = true; continue }
             if balls[i].resting, let w = balls[i].window {
@@ -759,9 +781,98 @@ final class SnowWorld {
             }
         }
         let before = balls.count
-        balls.removeAll { !$0.held && $0.y > floor + 300 }
+        balls.removeAll { $0.dead || (!$0.held && $0.y > floor + 300) }
         if balls.count != before { changed = true }
         return active
+    }
+
+    /// Брошенный снежок: дуга под тяжестью, подшаги не длиннее 10 pt (чтобы не проскочить тонкую
+    /// кромку). Медленно сел — лежит; на скорости — разбивается брызгами и налипает снегом на место
+    /// удара. Попал в ком — сбивает его; в край экрана — разбивается о него.
+    private func fly(_ i: Int, _ dt: Float) {
+        let speed0 = simd_length(SIMD2(balls[i].vx, balls[i].vy))
+        let steps = max(1, min(12, Int((speed0 * dt / 10).rounded(.up))))
+        let h = dt / Float(steps)
+        let minX = areas.map { Float($0.bounds.minX) }.min() ?? 0
+        let maxX = areas.map { Float($0.bounds.maxX) }.max() ?? 3000
+        for _ in 0..<steps {
+            let (support, win, dockSupport) = supportY(i)
+            balls[i].vy += 1500 * h
+            balls[i].vx *= 1 - 0.25 * h
+            balls[i].x += balls[i].vx * h
+            balls[i].y += balls[i].vy * h
+            let b = balls[i], r = b.r
+            let speed = simd_length(SIMD2(b.vx, b.vy))
+
+            if speed > 380 {
+                for j in balls.indices where j != i && !balls[j].dead && !balls[j].held && !balls[j].flying {
+                    let o = balls[j]
+                    let d = simd_distance(b.pos, o.pos)
+                    guard d < r + o.r * 0.9 else { continue }
+                    // Сбили ком: лёгкий улетает почти со скоростью снежка, тяжёлый едва сдвигается.
+                    let k = min(1, (r * r) / (o.r * o.r)) * 0.7
+                    balls[j].flying = true
+                    balls[j].resting = false
+                    balls[j].window = nil
+                    balls[j].onDock = false
+                    balls[j].vx = b.vx * k
+                    balls[j].vy = min(b.vy * k, 0) - 140 * k
+                    let n = simd_normalize(b.pos - o.pos)
+                    splat(i, nx: n.x, ny: n.y)
+                    return
+                }
+            }
+            if b.x - r < minX || b.x + r > maxX {
+                balls[i].x = min(max(b.x, minX + r), maxX - r)
+                splat(i, nx: b.x - r < minX ? 1 : -1, ny: 0)
+                return
+            }
+            if b.vy > 0 && b.y + r >= support {
+                balls[i].y = support - r
+                if b.vy < 320 {                      // мягко сел
+                    balls[i].flying = false
+                    balls[i].vx = 0
+                    balls[i].vy = 0
+                    balls[i].resting = true
+                    balls[i].window = win
+                    balls[i].onDock = dockSupport
+                    if let w = win, let cap = caps[w] {
+                        balls[i].off = SIMD2(balls[i].x - Float(cap.frame.minX), balls[i].y - Float(cap.frame.minY))
+                    }
+                } else {
+                    stickSnow(x: b.x, y: support, area: b.area * 0.45, spread: r)
+                    splat(i, nx: 0, ny: -1)
+                }
+                return
+            }
+        }
+    }
+
+    /// Снежок разбился: брызги разлетаются от места удара, сам ком исчезает.
+    private func splat(_ i: Int, nx: Float, ny: Float) {
+        let b = balls[i]
+        let n = min(40, max(8, Int(b.area / 6)))
+        for _ in 0..<n {
+            emitOne(x: b.x - nx * b.r * 0.5 + rng.signed() * b.r * 0.5,
+                    y: b.y - ny * b.r * 0.5 + rng.signed() * b.r * 0.4,
+                    vx: b.vx * 0.2 + nx * rng.range(40...200) + rng.signed() * 90,
+                    vy: b.vy * 0.1 + ny * rng.range(40...180) - rng.range(30...140),
+                    stick: 0.35, front: b.onDock, size: 2...4.6)
+        }
+        balls[i].dead = true
+        changed = true
+    }
+
+    /// Налипший от удара снег: кладётся на ту кромку (окна, Dock или сугроб), что под точкой.
+    private func stickSnow(x: Float, y: Float, area: Float, spread: Float) {
+        var all = surfaces
+        for a in areas { all.append(a.groundSurface) }
+        guard let s = all.first(where: { x >= $0.a && x <= $0.b && abs($0.top(at: x) - y) < 10 }) else { return }
+        let parts = 5
+        for k in 0..<parts {
+            let px = x + (Float(k) / Float(parts - 1) - 0.5) * spread * 1.4
+            s.map.deposit(at: px - s.originX, area: area / Float(parts))
+        }
     }
 
     /// Ближайшая опора под шаром i: кромка, сугроб у края экрана или другой шар.
@@ -860,7 +971,19 @@ final class SnowWorld {
         if let id = heldID, let i = balls.firstIndex(where: { $0.id == id }) {
             balls[i].held = false
             balls[i].rolling = false
+            balls[i].vx = 0
             balls[i].vy = 0
+            // Отпустил на замахе — бросок: ком летит со скоростью руки (не быстрее 2600 pt/с).
+            let speed = simd_length(mouseVel)
+            if speed > 250 {
+                let k = min(1, 2600 / speed) * 0.9
+                balls[i].vx = mouseVel.x * k
+                balls[i].vy = mouseVel.y * k
+                balls[i].flying = true
+                balls[i].resting = false
+                balls[i].window = nil
+                balls[i].onDock = false
+            }
         }
         heldID = nil
         rollSurface = nil

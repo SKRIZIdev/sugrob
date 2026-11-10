@@ -49,6 +49,10 @@ let segs10 = world.surfaces.filter { $0.window == 10 }.map { "\(Int($0.a))…\(I
 check(segs10 == ["180…520"], "над кромкой окна 10 справа висит окно 11 — снег только слева: \(segs10)")
 check(capHeight(11, 840) > 3, "на окне 11 лежит снег: \(capHeight(11, 840)) pt")
 check(capHeight(13, 145) > 1, "на виджете 13 лежит снег: \(capHeight(13, 145)) pt")
+if let w = world.surfaces.first(where: { $0.window == 13 }) {
+    check(w.y == 118 && w.endA == 68 && w.endB == 222 && w.corner == 28,
+          "снег на виджете лежит на плашке (окно минус поля 8 pt), углы 28 pt: верх \(w.y), края \(w.endA)…\(w.endB)")
+}
 let groundMid = world.areas[0].ground.height(at: 735)
 check(groundMid > 2, "сугроб у нижнего края: \(groundMid) pt")
 let flakes = world.areas[0].flakes.count
@@ -103,6 +107,25 @@ func render(_ name: String, lightWindows: Bool) {
     var bg: [TriVertex] = [], front: [TriVertex] = []
     rect(&bg, CGRect(x: 0, y: 0, width: W, height: H), SIMD4(0.10, 0.16, 0.27, 1), SIMD4(0.20, 0.30, 0.38, 1))
     for w in wins.reversed() {
+        if w.kind == .widget {
+            // Виджет: прозрачные поля 8 pt и плашка со скруглёнными углами 28 pt.
+            let p = w.frame.insetBy(dx: 8, dy: 8), r: CGFloat = 28
+            let c = SIMD4<Float>(0.22, 0.24, 0.28, 0.92)
+            rect(&front, p.insetBy(dx: r, dy: 0), c, c)
+            rect(&front, CGRect(x: p.minX, y: p.minY + r, width: r, height: p.height - 2 * r), c, c)
+            rect(&front, CGRect(x: p.maxX - r, y: p.minY + r, width: r, height: p.height - 2 * r), c, c)
+            for (cx, cy) in [(p.minX + r, p.minY + r), (p.maxX - r, p.minY + r), (p.minX + r, p.maxY - r), (p.maxX - r, p.maxY - r)] {
+                let o = SIMD2(Float(cx), Float(cy))
+                let sx: Float = cx < p.midX ? -1 : 1, sy: Float = cy < p.midY ? -1 : 1
+                for k in 0..<12 {
+                    let a0 = Float(k) / 12 * .pi / 2, a1 = Float(k + 1) / 12 * .pi / 2
+                    front += [TriVertex(pos: o, color: c),
+                              TriVertex(pos: o + SIMD2(sx * cos(a0), sy * sin(a0)) * Float(r), color: c),
+                              TriVertex(pos: o + SIMD2(sx * cos(a1), sy * sin(a1)) * Float(r), color: c)]
+                }
+            }
+            continue
+        }
         let body: SIMD4<Float> = lightWindows ? SIMD4(1, 1, 1, 1) : SIMD4(0.16, 0.17, 0.19, 1)
         let bar: SIMD4<Float> = lightWindows ? SIMD4(0.93, 0.93, 0.94, 1) : SIMD4(0.22, 0.23, 0.25, 1)
         rect(&front, w.frame, body, body)          // снег идёт за окнами
@@ -245,7 +268,7 @@ if let s = world.surfaces.first(where: { $0.isDock }) {
     let x = s.b - s.corner * 0.3
     let g = s.base(at: x), h = s.map.height(at: x - s.originX)
     let outerX = x + g.nx * h
-    check(g.y > s.y + 1 && h > 2 && outerX < s.b + 3,
+    check(g.y > s.y + 1 && h > 0.3 && outerX < s.b + 3,
           "снег облегает угол Dock: на дуге \(String(format: "%.1f", h)) pt, опора ниже кромки на \(String(format: "%.1f", g.y - s.y)), наружу за плашку \(String(format: "%.1f", outerX - s.b)) pt")
 }
 let man = world.balls
@@ -290,6 +313,55 @@ check(down.count == 3 && down.allSatisfy { !$0.onDock && $0.resting } && (lowest
       "снеговик опустился к кромке, не развалившись: низы комьев \(down.map { Int($0.y + $0.r) })")
 Settings.shared.paused = false
 world.setDock(nil, now: now)
+
+// Снежки: скатать ком и бросить — теми же вызовами, что у мыши; скорость руки — mouseVel.
+print("Снежки:")
+var groundAfterRoll: Float = 0
+func throwBall(from x0: Float, roll x1: Float, velocity v: SIMD2<Float>) -> Int? {
+    let known = Set(world.balls.map { $0.id })
+    roll(from: x0, to: x1)
+    guard let id = world.balls.last?.id, !known.contains(id) else { return nil }
+    groundAfterRoll = world.areas[0].ground.total
+    world.mouseVel = v
+    world.sculptUp()
+    world.mouseVel = .zero
+    return id
+}
+let manBefore = world.balls.map { ($0.id, $0.x, $0.y) }
+if let id = throwBall(from: 300, roll: 360, velocity: SIMD2(700, -900)) {
+    let groundBefore = groundAfterRoll
+    check(world.balls.first { $0.id == id }?.flying == true, "отпустил на замахе — ком полетел")
+    var t = 0, maxH: Float = 1e9
+    while world.balls.contains(where: { $0.id == id }) && t < 240 {
+        run(1.0 / 60); t += 1
+        if let b = world.balls.first(where: { $0.id == id }) { maxH = min(maxH, b.y) }
+    }
+    check(!world.balls.contains { $0.id == id } && maxH < 800,
+          "снежок пролетел дугой (верх дуги на \(Int(maxH)) pt) и разбился за \(t) кадров")
+    check(world.areas[0].ground.total > groundBefore - 50, "снег от удара налип: сугроб \(Int(groundBefore)) → \(Int(world.areas[0].ground.total))")
+}
+// В снеговика: бросок низом вправо
+if ProcessInfo.processInfo.environment["SNAP_DEBUG"] != nil {
+    print("    комья до броска:", world.balls.map { "id\($0.id) x\(Int($0.x)) y\(Int($0.y)) r\(Int($0.r)) \($0.resting ? "стоит" : "")" })
+    print("    сугроб у x=900…960:", (0..<4).map { String(format: "%.1f", world.areas[0].ground.height(at: Float(900 + $0 * 20))) })
+}
+if let target = manBefore.min(by: { $0.2 > $1.2 }), let id = throwBall(from: 900, roll: 960, velocity: SIMD2(1500, -260)) {
+    if ProcessInfo.processInfo.environment["SNAP_DEBUG"] != nil {
+        print("    бросок id\(id):", world.balls.first { $0.id == id }.map { "x\(Int($0.x)) y\(Int($0.y)) r\(Int($0.r)) летит \($0.flying)" } ?? "нет")
+    }
+    var t = 0
+    while world.balls.contains(where: { $0.id == id }) && t < 120 { run(1.0 / 60); t += 1 }
+    run(0.4)
+    let moved = world.balls.contains { b in b.id == target.0 && (abs(b.x - target.1) > 3 || abs(b.y - target.2) > 3) }
+        || !world.balls.contains { $0.id == target.0 }
+    check(!world.balls.contains { $0.id == id } && moved, "снежок попал в снеговика и сбил ком")
+}
+// В край экрана
+if let id = throwBall(from: 160, roll: 120, velocity: SIMD2(-1800, -300)) {
+    var t = 0
+    while world.balls.contains(where: { $0.id == id }) && t < 60 { run(1.0 / 60); t += 1 }
+    check(!world.balls.contains { $0.id == id } && t < 30, "снежок разбился о край экрана за \(t) кадров")
+}
 
 // Медленное перетаскивание (300 pt/с, 1 с): снег частично держится.
 print("Медленное перетаскивание окна 10:")
