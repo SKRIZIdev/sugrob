@@ -222,7 +222,8 @@ final class GingerbreadScene {
         let bob: Float = walking ? -abs(sin(stride)) * 1.2 : 0
         // Человечек → координаты сцены → экран; x отражается, куда он смотрит.
         func P(_ x: Float, _ y: Float) -> SIMD2<Float> { o + SIMD2(manX + x * facing, gy + y + bob) * k }
-        let body = SIMD4<Float>(0.80, 0.49, 0.25, a), bodyLow = SIMD4<Float>(0.66, 0.38, 0.19, a)
+        // Тёмный «шоколадный» пряник: светлая стена домика за ним не сливается с ним.
+        let body = SIMD4<Float>(0.52, 0.28, 0.13, a), bodyLow = SIMD4<Float>(0.41, 0.21, 0.09, a)
         let icingC = SIMD4<Float>(0.99, 0.98, 0.96, a)
         func disc(_ c: SIMD2<Float>, _ r: Float, _ col: SIMD4<Float>) {
             let n = 14
@@ -324,8 +325,11 @@ final class GingerbreadScene {
         if phase == .dig { drawShovel() }
         // Глазурь: глаза, улыбка, пуговки-конфетки, оборки на руках и ногах.
         let dark = SIMD3<Float>(0.18, 0.10, 0.07), white = SIMD3<Float>(0.99, 0.98, 0.96)
-        dot(-2.1, -25.6, 1.7, dark, kind: 2)
-        dot(2.1, -25.6, 1.7, dark, kind: 2)
+        // Глаза из глазури с тёмными зрачками — на тёмном прянике видны.
+        dot(-2.1, -25.4, 2.2, white, kind: 2)
+        dot(2.1, -25.4, 2.2, white, kind: 2)
+        dot(-2.1 + 0.3, -25.3, 1.0, dark, kind: 2)
+        dot(2.1 + 0.3, -25.3, 1.0, dark, kind: 2)
         for i in -1...1 { dot(Float(i) * 1.6, -22.4 + (i == 0 ? 0.5 : 0), 1.1, white, kind: 2) }
         dot(0, -15.5, 2.6, SIMD3(0.90, 0.18, 0.22), kind: 4)
         dot(0, -11.8, 2.6, SIMD3(0.22, 0.65, 0.35), kind: 4)
