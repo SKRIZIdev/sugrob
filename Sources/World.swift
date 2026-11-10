@@ -1068,6 +1068,7 @@ final class SnowWorld {
             appendCap(s, max(s.a, x0), min(s.b, x1), &tris,
                       scale: s.isDock ? dockLook.scale : 1, alpha: s.isDock ? dockLook.alpha : 1)
         }
+        if !dockLayer, a === areas.first { appendRoofRounding(&tris) }
         if !dockLayer { appendCap(a.groundSurface, x0, x1, &tris) }
         if !dockLayer, let g = groundGhost, dockArea === a {
             let k = g.life / groundGhostLife
@@ -1160,6 +1161,51 @@ final class SnowWorld {
                 quad(&t, oa + na * 1.5, ob + nb * 1.5, ob, oa, rimOut, rimOut, rimIn, rimIn)
             }
             i += 1
+        }
+    }
+
+    /// Снег на крыше домика скруглён: на коньке — дуга, касательная к слоям обоих скатов (вместо
+    /// острого уголка), на карнизах — полукруглые края вместо обрыва.
+    private func appendRoofRounding(_ t: inout [TriVertex]) {
+        guard scene.solid else { return }
+        let parts = scene.roofParts(anchor: sceneAnchor)
+        let l = parts[0], r = parts[1]
+        let top = SIMD4<Float>(0.985, 0.99, 1.0, 1), low = SIMD4<Float>(0.83, 0.87, 0.94, 1)
+        let nL = simd_normalize(SIMD2<Float>(l.slope, -1)), nR = simd_normalize(SIMD2<Float>(r.slope, -1))
+        let angL = atan2(nL.y, nL.x), angR = atan2(nR.y, nR.x)
+        // Конёк: центр — точка конька, радиус — толщина снега у конька.
+        let ridge = SIMD2<Float>(l.x + l.width, l.y + l.slope * l.width)
+        let hRidge = (l.map.height(at: l.width) + r.map.height(at: 0)) / 2
+        if hRidge > 0.3 { fan(&t, ridge, hRidge, angL, angR, center: low, edgeA: top, edgeB: top, rim: true) }
+        // Карнизы: полукруг на конце слоя, выпуклый наружу вдоль ската.
+        let hL = l.map.height(at: 0)
+        if hL > 0.3 {
+            let c = SIMD2<Float>(l.x, l.y) + nL * (hL / 2)
+            fan(&t, c, hL / 2, angL, angL - .pi, center: (top + low) / 2, edgeA: top, edgeB: low, rim: false)
+        }
+        let hR = r.map.height(at: r.width)
+        if hR > 0.3 {
+            let c = SIMD2<Float>(r.x + r.width, r.y + r.slope * r.width) + nR * (hR / 2)
+            fan(&t, c, hR / 2, angR, angR + .pi, center: (top + low) / 2, edgeA: top, edgeB: low, rim: false)
+        }
+    }
+
+    /// Веер треугольников по дуге от угла a0 к a1 (цвет по дуге — от edgeA к edgeB), с мягкой каймой.
+    private func fan(_ t: inout [TriVertex], _ c: SIMD2<Float>, _ r: Float, _ a0: Float, _ a1: Float,
+                     center: SIMD4<Float>, edgeA: SIMD4<Float>, edgeB: SIMD4<Float>, rim: Bool) {
+        let n = 14
+        let rimIn = SIMD4<Float>(0.52, 0.58, 0.70, 0.32), rimOut = SIMD4<Float>(0.52, 0.58, 0.70, 0)
+        for k in 0..<n {
+            let u0 = Float(k) / Float(n), u1 = Float(k + 1) / Float(n)
+            let d0 = SIMD2<Float>(cos(a0 + (a1 - a0) * u0), sin(a0 + (a1 - a0) * u0))
+            let d1 = SIMD2<Float>(cos(a0 + (a1 - a0) * u1), sin(a0 + (a1 - a0) * u1))
+            let c0 = edgeA + (edgeB - edgeA) * u0, c1 = edgeA + (edgeB - edgeA) * u1
+            t.append(TriVertex(pos: c, color: center))
+            t.append(TriVertex(pos: c + d0 * r, color: c0))
+            t.append(TriVertex(pos: c + d1 * r, color: c1))
+            if rim {
+                quad(&t, c + d0 * (r + 1.5), c + d1 * (r + 1.5), c + d1 * r, c + d0 * r, rimOut, rimOut, rimIn, rimIn)
+            }
         }
     }
 
