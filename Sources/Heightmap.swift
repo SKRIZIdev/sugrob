@@ -1,9 +1,14 @@
+import Foundation
+
 /// Профиль снега вдоль горизонтальной кромки: высота в точках через каждые `cell` pt.
 /// Снег оседает, осыпается по углу естественного откоса и ссыпается с краёв.
 final class Heightmap {
     let cell: Float
     let maxH: Float
     private(set) var h: [Float]
+    /// Предел высоты по ячейкам: волнистый, чтобы полный сугроб не выглядел ровной плитой.
+    private var limit: [Float] = []
+    private let phase: (Float, Float) = (Float.random(in: 0...6.28), Float.random(in: 0...6.28))
     /// Профиль менялся и ещё не успокоился — нужен relax и перерисовка.
     private(set) var dirty = false
 
@@ -11,10 +16,22 @@ final class Heightmap {
         self.cell = cell
         self.maxH = maxH
         h = Array(repeating: 0, count: Heightmap.count(width, cell))
+        makeLimit()
     }
 
     private static func count(_ width: Float, _ cell: Float) -> Int {
         max(2, Int((max(width, 0) / cell).rounded(.up)) + 1)
+    }
+
+    private func makeLimit() {
+        var l = [Float](repeating: maxH, count: h.count)
+        for i in l.indices {
+            let x = Float(i) * cell
+            let slow: Float = sin(x / 37 + phase.0)
+            let fast: Float = sin(x / 13 + phase.1)
+            l[i] = maxH * (0.84 + 0.08 * (slow + fast))      // ±16% вокруг 84% от потолка
+        }
+        limit = l
     }
 
     var total: Float { h.reduce(0, +) * cell }
@@ -31,7 +48,16 @@ final class Heightmap {
             new[i] = old[i0] * (1 - f) + old[i1] * f
         }
         h = new
+        makeLimit()
         dirty = true
+    }
+
+    /// Высота для отрисовки: сглаженная по соседям, чтобы плечи сугроба были круглыми, а не зубчатыми.
+    @inline(__always)
+    func smooth(_ i: Int) -> Float {
+        let n = h.count
+        let a = h[max(i - 2, 0)], b = h[max(i - 1, 0)], c = h[i], d = h[min(i + 1, n - 1)], e = h[min(i + 2, n - 1)]
+        return (a + 2 * b + 3 * c + 2 * d + e) / 9
     }
 
     @inline(__always)
@@ -43,46 +69,50 @@ final class Heightmap {
     }
 
     /// Положить снег площадью `area` pt² в точку x.
+    /// Снежинка ложится не в одну ячейку, а пятном на пять — так сугроб растёт ровно, без пиков.
     func deposit(at x: Float, area: Float) {
         let i = Int((x / cell).rounded())
         let v = area / cell
-        add(i, v * 0.5)
-        add(i - 1, v * 0.25)
-        add(i + 1, v * 0.25)
+        add(i, v * 0.36)
+        add(i - 1, v * 0.22)
+        add(i + 1, v * 0.22)
+        add(i - 2, v * 0.10)
+        add(i + 2, v * 0.10)
         dirty = true
     }
 
     @inline(__always)
     private func add(_ i: Int, _ v: Float) {
         guard i >= 0, i < h.count else { return }
-        h[i] = min(maxH, h[i] + v)
+        h[i] = min(limit[i], h[i] + v)
     }
 
     /// Осыпание по углу откоса. Возвращает площадь снега, ссыпавшегося с левого и правого края.
     /// `edges: false` — края не ограничены (сугроб у кромки экрана).
     @discardableResult
-    func relax(edges: Bool = true, slope: Float = 0.85) -> (left: Float, right: Float) {
+    func relax(edges: Bool = true, slope: Float = 0.6) -> (left: Float, right: Float) {
         let lim = slope * cell
+        let eps: Float = 0.002          // мельче — не считаем движением, иначе профиль «дрожит» вечно
         let n = h.count
         var moved = false
         var i = 0
         while i < n - 1 {
             let d = h[i] - h[i + 1]
-            if d > lim { let t = (d - lim) * 0.5; h[i] -= t; h[i + 1] += t; moved = true }
-            else if d < -lim { let t = (-d - lim) * 0.5; h[i + 1] -= t; h[i] += t; moved = true }
+            if d > lim + eps { let t = (d - lim) * 0.5; h[i] -= t; h[i + 1] += t; moved = true }
+            else if d < -lim - eps { let t = (-d - lim) * 0.5; h[i + 1] -= t; h[i] += t; moved = true }
             i += 1
         }
         i = n - 2
         while i >= 0 {
             let d = h[i] - h[i + 1]
-            if d > lim { let t = (d - lim) * 0.5; h[i] -= t; h[i + 1] += t; moved = true }
-            else if d < -lim { let t = (-d - lim) * 0.5; h[i + 1] -= t; h[i] += t; moved = true }
+            if d > lim + eps { let t = (d - lim) * 0.5; h[i] -= t; h[i + 1] += t; moved = true }
+            else if d < -lim - eps { let t = (-d - lim) * 0.5; h[i + 1] -= t; h[i] += t; moved = true }
             i -= 1
         }
         var l: Float = 0, r: Float = 0
         if edges {
-            if h[0] > lim { l = (h[0] - lim) * cell; h[0] = lim; moved = true }
-            if h[n - 1] > lim { r = (h[n - 1] - lim) * cell; h[n - 1] = lim; moved = true }
+            if h[0] > lim + eps { l = (h[0] - lim) * cell; h[0] = lim; moved = true }
+            if h[n - 1] > lim + eps { r = (h[n - 1] - lim) * cell; h[n - 1] = lim; moved = true }
         }
         dirty = moved
         return (l, r)

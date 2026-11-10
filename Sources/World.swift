@@ -118,8 +118,13 @@ final class SnowWorld {
                     let dt = max(now - cap.lastSync, 1.0 / 120)
                     let vx = Float((w.frame.minX - old.minX) / dt), vy = Float((w.frame.minY - old.minY) / dt)
                     cap.frame = w.frame
+                    // Сколько снега слетает — по времени, а не по числу опросов: пока окно тащат,
+                    // опрос идёт каждый кадр. 300 pt/с за секунду сбрасывают ~40%, рывок — почти всё.
                     let speed = (vx * vx + vy * vy).squareRoot()
-                    if cap.visible, speed > 220 { shake(cap, vx: vx, vy: vy, speed: speed) }
+                    let rate = max(0, speed - 180) / 250
+                    if cap.visible, rate > 0 {
+                        shake(cap, vx: vx, vy: vy, fraction: min(0.6, 1 - exp(-rate * Float(dt))))
+                    }
                 }
                 if !cap.visible { cap.visible = true; moved = true }
                 cap.lastSeen = now
@@ -336,12 +341,14 @@ final class SnowWorld {
     // MARK: Сброс снега
 
     /// Окно дёрнули — часть снега слетает, унося скорость окна.
-    private func shake(_ cap: Cap, vx: Float, vy: Float, speed: Float) {
+    private func shake(_ cap: Cap, vx: Float, vy: Float, fraction frac: Float) {
         let map = cap.map
         let total = map.total
-        guard total > 4 else { return }
-        let frac = min(0.55, speed / 2600)
-        let count = min(70, max(1, Int(total * frac / 7)))
+        guard total > 4, frac > 0.001 else { return }
+        let removed = total * frac
+        // Слетевший снег — снежинки; мелочь не плодим, она просто исчезает.
+        let count = min(40, Int(removed / 7))
+        guard count > 0 else { map.scale(1 - frac); changed = true; return }
         let step = max(1, map.h.count / count)
         let x0 = Float(cap.frame.minX), y0 = Float(cap.frame.minY)
         var i = Int(rng.unit() * Float(step))
@@ -666,11 +673,11 @@ final class SnowWorld {
         let rimIn = SIMD4<Float>(0.52, 0.58, 0.70, 0.32)
         let rimOut = SIMD4<Float>(0.52, 0.58, 0.70, 0)
         while i < last {
-            var ha = hs[i], hb = hs[i + 1]
-            if ha < 0.12 && hb < 0.12 { i += 1; continue }
+            if hs[i] < 0.12 && hs[i + 1] < 0.12 { i += 1; continue }
+            var ha = map.smooth(i), hb = map.smooth(i + 1)
             var xa = s.originX + Float(i) * c, xb = xa + c
-            if xa < clipA { ha = map.height(at: clipA - s.originX); xa = clipA }
-            if xb > clipB { hb = map.height(at: clipB - s.originX); xb = clipB }
+            if xa < clipA { ha += (hb - ha) * (clipA - xa) / c; xa = clipA }
+            if xb > clipB { hb = ha + (hb - ha) * (clipB - xa) / max(xb - xa, 0.001); xb = clipB }
             if xb > xa {
                 let ya = s.y - ha, yb = s.y - hb
                 quad(&t, SIMD2(xa, ya), SIMD2(xb, yb), SIMD2(xb, s.y), SIMD2(xa, s.y), top, top, low, low)

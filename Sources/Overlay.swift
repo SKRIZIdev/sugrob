@@ -58,6 +58,8 @@ final class Overlay {
         view.wantsLayer = true
         view.layer?.isOpaque = false
         view.layer?.backgroundColor = .clear
+        // Два кадровых буфера вместо трёх: на Retina это минус ~22 МБ на экран.
+        (view.layer as? CAMetalLayer)?.maximumDrawableCount = 2
         renderer = ScreenRenderer(area: area, world: world)
         view.delegate = renderer
         view.world = world
