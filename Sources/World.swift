@@ -35,6 +35,7 @@ struct Surface {
     var originX: Float          // x начала профиля
     let map: Heightmap
     var window: CGWindowID?     // nil — земля или Dock
+    var isDock = false
 
     @inline(__always) func top(at x: Float) -> Float { y - map.height(at: x - originX) }
 }
@@ -46,6 +47,7 @@ struct Ball {
     var vy: Float = 0
     var held = false, rolling = false, resting = false
     var window: CGWindowID? = nil
+    var onDock = false          // стоит на Dock (сам или в стопке) — рисуется слоем Dock
     var off = SIMD2<Float>(0, 0)
     var grab = SIMD2<Float>(0, 0)
     var r: Float { (area / .pi).squareRoot() }
@@ -79,6 +81,14 @@ final class SnowWorld {
     private var caps: [CGWindowID: Cap] = [:]
     private var order: [CGWindowID] = []
     private var dock: Cap?
+    private var dockTarget: CGRect?      // где Dock по Accessibility; спрятанный — за нижней кромкой
+    private weak var dockArea: ScreenArea?
+    private var dockTop: Float = 0       // где верх Dock нарисован сейчас
+    private var dockRaised = false       // снег сейчас на крыше Dock, а не у кромки под ним
+    /// Dock на экране (выехал или едет) — его надо опрашивать каждый кадр.
+    var dockShown: Bool { dock?.visible == true }
+    /// Где Dock нарисован сейчас и сколько снега на нём (для проверок).
+    var dockState: (frame: CGRect, snow: Float)? { dock.map { ($0.frame, $0.map.total) } }
     private(set) var surfaces: [Surface] = []
     private(set) var balls: [Ball] = []
     private var rng = RNG()
@@ -145,25 +155,79 @@ final class SnowWorld {
         return moved
     }
 
+    /// Свежая рамка Dock от Accessibility (nil — доступа нет или Dock не снизу).
     func setDock(_ frame: CGRect?, now: Double) {
-        let onScreen = frame.map { f in
-            f.width > f.height && areas.contains { $0.bounds.minX <= f.midX && f.midX < $0.bounds.maxX && f.minY < $0.bounds.maxY - 4 }
-        } ?? false
-        guard let f = frame, onScreen else {
-            if dock?.visible == true { dock?.visible = false; rebuildSurfaces(); changed = true }
+        guard let f = frame, f.width > f.height,
+              let a = areas.first(where: { $0.bounds.minX <= f.midX && f.midX < $0.bounds.maxX }) else {
+            dockTarget = nil
             return
         }
-        if let d = dock {
-            guard d.frame != f || !d.visible else { return }
-            if abs(d.frame.width - f.width) > 0.5 { d.map.resize(width: Float(f.width)) }
-            d.frame = f
-            d.visible = true
-        } else {
+        dockTarget = f
+        if dock == nil || dockArea !== a {
             dock = Cap(frame: f, maxH: 12, now: now)
+            dock?.visible = false
+            dockArea = a
+            dockTop = min(Float(f.minY), Float(a.bounds.maxY))
+            dockRaised = false
         }
+    }
+
+    /// Dock со скрытием выезжает из-под нижней кромки: на старте он подхватывает сугроб, лежавший
+    /// над ним, и везёт вверх; на подъёме часть снега крошится с краёв и подлетает. Прячется —
+    /// снег едет вниз вместе с ним и у кромки снова ложится сугробом на то же место.
+    private func stepDock(_ dt: Float) {
+        guard let d = dock, let a = dockArea else { return }
+        guard let f = dockTarget else {
+            if d.visible { d.visible = false; rebuildSurfaces(); changed = true }
+            return
+        }
+        let bottom = Float(a.bounds.maxY)
+        let target = min(Float(f.minY), bottom)
+        // Accessibility отдаёт каждый шаг анимации Dock (~раз в 10 мс) — идём за ним без сглаживания.
+        let old = dockTop
+        dockTop = target
+        if abs(d.frame.width - f.width) > 0.5 { d.map.resize(width: Float(f.width)) }
+
+        let shown = dockTop < bottom - 0.5
+        if shown && !dockRaised {
+            d.map.absorb(a.ground, offset: Float(f.minX - a.bounds.minX))
+            dockRaised = true
+        } else if !shown && dockRaised {
+            a.ground.absorb(d.map, offset: Float(a.bounds.minX - f.minX))
+            dockRaised = false
+        }
+
+        let frame = CGRect(x: f.minX, y: CGFloat(dockTop), width: f.width, height: f.height)
+        guard frame != d.frame || d.visible != shown else { return }
+        d.frame = frame
+        d.visible = shown
+        let vy = (dockTop - old) / max(dt, 0.001)
+        let rate = max(0, abs(vy) - 150) / 400
+        if shown, rate > 0 { shake(d, vx: 0, vy: vy, fraction: min(0.2, 1 - exp(-rate * dt))) }
         rebuildSurfaces()
+        if shown { liftBalls() }
         changed = true
     }
+
+    /// Dock выезжает из-под снеговика — поднимает его всей стопкой, а не проходит насквозь.
+    private func liftBalls() {
+        guard !balls.isEmpty, let s = surfaces.first(where: { $0.isDock }) else { return }
+        var moved = Set<Int>()
+        for i in balls.indices.sorted(by: { balls[$0].y > balls[$1].y }) {      // снизу вверх
+            let b = balls[i]
+            guard !b.held, !moved.contains(b.id), b.window == nil, b.x >= s.a, b.x <= s.b else { continue }
+            let support = s.top(at: b.x) + min(b.r * 0.25, s.map.height(at: b.x - s.originX) * 0.6)
+            let over = (b.y + b.r) - support
+            guard over > 0.01 else { continue }
+            for j in balls.indices where !balls[j].held && !moved.contains(balls[j].id)
+                && abs(balls[j].x - b.x) < b.r && balls[j].y <= b.y {
+                balls[j].y -= over
+                balls[j].onDock = true
+                moved.insert(balls[j].id)
+            }
+        }
+    }
+
 
     /// Видимые участки кромок — только на них ложится снег.
     /// Поверх окон: кромку прячут окна спереди и Dock.
@@ -186,10 +250,9 @@ final class SnowWorld {
         }
 
         if let d = dock, let df = dockFrame {
-            for s in segments(df, hiddenBy: behind ? wins.map { $0.1 } : []) {
-                list.append(Surface(a: Float(s.0), b: Float(s.1), y: Float(df.minY),
-                                    originX: Float(df.minX), map: d.map, window: nil))
-            }
+            // Снег на Dock рисуется своим слоем прямо над Dock — окна его не закрывают.
+            list.append(Surface(a: Float(df.minX), b: Float(df.maxX), y: Float(df.minY),
+                                originX: Float(df.minX), map: d.map, window: nil, isDock: true))
         }
         if settings.accumulate {
             var fronts: [CGRect] = dockFrame.map { [$0] } ?? []
@@ -226,6 +289,7 @@ final class SnowWorld {
     func step(dt rawDt: Float) {
         let dt = min(max(rawDt, 0.001), 0.05)
         updateWind(dt)
+        stepDock(dt)
         let p = settings.intensity
         let wind = settings.wind.speed + gust
         var flakes = 0
@@ -473,10 +537,14 @@ final class SnowWorld {
                     balls[i].window = nil
                 }
             }
-            let (support, win) = supportY(i)
+            let (support, win, dockSupport) = supportY(i)
             let r = balls[i].r
             if balls[i].resting {
-                if support - r > balls[i].y + 1.5 { balls[i].resting = false; balls[i].window = nil } else { continue }
+                if support - r > balls[i].y + 1.5 {
+                    balls[i].resting = false
+                    balls[i].window = nil
+                    balls[i].onDock = false
+                } else { continue }
             }
             active = true
             balls[i].vy += 1500 * dt
@@ -486,6 +554,7 @@ final class SnowWorld {
                 balls[i].vy = 0
                 balls[i].resting = true
                 balls[i].window = win
+                balls[i].onDock = dockSupport
                 if let w = win, let cap = caps[w] {
                     balls[i].off = SIMD2(balls[i].x - Float(cap.frame.minX), balls[i].y - Float(cap.frame.minY))
                 }
@@ -500,27 +569,28 @@ final class SnowWorld {
     }
 
     /// Ближайшая опора под шаром i: кромка, сугроб у края экрана или другой шар.
-    private func supportY(_ i: Int) -> (Float, CGWindowID?) {
+    private func supportY(_ i: Int) -> (Float, CGWindowID?, Bool) {
         let b = balls[i], r = b.r
         let bottom = b.y + r
         var best = Float.greatestFiniteMagnitude
         var win: CGWindowID?
+        var onDock = false
         for s in surfaces where b.x >= s.a && b.x <= s.b {
             let sy = s.top(at: b.x) + min(r * 0.25, s.map.height(at: b.x - s.originX) * 0.6)
-            if sy >= bottom - 4 && sy < best { best = sy; win = s.window }
+            if sy >= bottom - 4 && sy < best { best = sy; win = s.window; onDock = s.isDock }
         }
         for a in areas where Float(a.bounds.minX) <= b.x && b.x < Float(a.bounds.maxX) {
             let g = a.groundSurface
             let sy = g.top(at: b.x) + min(r * 0.25, a.ground.height(at: b.x - g.originX) * 0.6)
-            if sy >= bottom - 4 && sy < best { best = sy; win = nil }
+            if sy >= bottom - 4 && sy < best { best = sy; win = nil; onDock = false }
         }
         for j in balls.indices where j != i && !balls[j].held && balls[j].resting {
             let o = balls[j]
             guard abs(o.x - b.x) < o.r * 0.85, o.y > b.y else { continue }
             let top = o.y - o.r * 0.9
-            if top >= bottom - 4 && top < best { best = top; win = o.window }
+            if top >= bottom - 4 && top < best { best = top; win = o.window; onDock = o.onDock }
         }
-        return (best, win)
+        return (best, win, onDock)
     }
 
     private func surfaceNear(_ p: SIMD2<Float>) -> Surface? {
@@ -543,6 +613,7 @@ final class SnowWorld {
             balls[i].rolling = false
             balls[i].resting = false
             balls[i].window = nil
+            balls[i].onDock = false
             balls[i].vy = 0
             balls[i].grab = p - balls[i].pos
             heldID = balls[i].id
@@ -619,24 +690,26 @@ final class SnowWorld {
 
     // MARK: Кадр для отрисовки
 
-    func buildFrame(for a: ScreenArea, points: inout [PointVertex], tris: inout [TriVertex]) -> FrameRanges {
+    func buildFrame(for a: ScreenArea, dockLayer: Bool = false,
+                    points: inout [PointVertex], tris: inout [TriVertex]) -> FrameRanges {
         points.removeAll(keepingCapacity: true)
         tris.removeAll(keepingCapacity: true)
         var r = FrameRanges()
         let x0 = Float(a.bounds.minX), x1 = Float(a.bounds.maxX)
-        for s in a.surfaces { appendCap(s, max(s.a, x0), min(s.b, x1), &tris) }
-        appendCap(a.groundSurface, x0, x1, &tris)
+        for s in a.surfaces where s.isDock == dockLayer { appendCap(s, max(s.a, x0), min(s.b, x1), &tris) }
+        if !dockLayer { appendCap(a.groundSurface, x0, x1, &tris) }
         r.caps = tris.count
 
         let vis = a.bounds.insetBy(dx: -60, dy: -60)
         var shown: [Int] = []
-        for (i, b) in balls.enumerated() where vis.contains(CGPoint(x: CGFloat(b.x), y: CGFloat(b.y))) {
+        for (i, b) in balls.enumerated() where b.onDock == dockLayer && vis.contains(CGPoint(x: CGFloat(b.x), y: CGFloat(b.y))) {
             points.append(PointVertex(pos: b.pos, size: b.r * 2, alpha: 1, color: SIMD4(1, 1, 1, 1)))
             shown.append(i)
         }
         r.balls = points.count
         for i in shown { decorate(i, &points, &tris) }
         r.decor = tris.count
+        if dockLayer { return r }
 
         for f in a.flakes {
             points.append(PointVertex(pos: SIMD2(f.x, f.y), size: f.size, alpha: f.alpha, color: SIMD4(1, 1, 1, 0)))

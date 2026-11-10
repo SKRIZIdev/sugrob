@@ -155,6 +155,32 @@ func render(_ name: String, lightWindows: Bool) {
         enc.setRenderPipelineState(gpu.triPipeline); enc.setVertexBuffer(tb, offset: 0, index: 0)
         enc.drawPrimitives(type: .triangle, vertexStart: off + tris.count, vertexCount: front.count)
     }
+    // Dock и снег на нём — над окнами, как в приложении.
+    if let d = world.dockState, world.dockShown {
+        var dockTris: [TriVertex] = []
+        let bar = SIMD4<Float>(0.55, 0.58, 0.64, 0.55)
+        rect(&dockTris, d.frame.insetBy(dx: 0, dy: 4), bar, bar)
+        var p2: [PointVertex] = [], t2: [TriVertex] = []
+        let r2 = world.buildFrame(for: world.areas[0], dockLayer: true, points: &p2, tris: &t2)
+        let o2 = dockTris.count
+        dockTris += t2
+        let db = gpu.device.makeBuffer(bytes: dockTris, length: dockTris.count * MemoryLayout<TriVertex>.stride)!
+        enc.setRenderPipelineState(gpu.triPipeline); enc.setVertexBuffer(db, offset: 0, index: 0)
+        enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: o2 + r2.caps)
+        if !p2.isEmpty {
+            let dp = gpu.device.makeBuffer(bytes: p2, length: p2.count * MemoryLayout<PointVertex>.stride)!
+            enc.setRenderPipelineState(gpu.pointPipeline); enc.setVertexBuffer(dp, offset: 0, index: 0)
+            enc.drawPrimitives(type: .point, vertexStart: 0, vertexCount: r2.balls)
+            if r2.decor > r2.caps {
+                enc.setRenderPipelineState(gpu.triPipeline); enc.setVertexBuffer(db, offset: 0, index: 0)
+                enc.drawPrimitives(type: .triangle, vertexStart: o2 + r2.caps, vertexCount: r2.decor - r2.caps)
+            }
+            if p2.count > r2.balls {
+                enc.setRenderPipelineState(gpu.pointPipeline); enc.setVertexBuffer(dp, offset: 0, index: 0)
+                enc.drawPrimitives(type: .point, vertexStart: r2.balls, vertexCount: p2.count - r2.balls)
+            }
+        }
+    }
     enc.endEncoding()
     cmd.commit()
     cmd.waitUntilCompleted()
@@ -172,6 +198,55 @@ func render(_ name: String, lightWindows: Bool) {
 
 render("1-dark", lightWindows: false)
 render("2-light", lightWindows: true)
+
+// Dock со скрытием: положения — из настоящей записи анимации (Accessibility, шаг ~10 мс).
+print("Dock выезжает и прячется:")
+let dockUp: [CGFloat] = [956, 955, 953, 948, 945, 941, 937, 932, 927, 922, 917, 911, 905, 900, 895, 885, 876, 872, 869, 867, 865, 864, 863]
+func dockStep(_ y: CGFloat, frames: Int = 1) {
+    for _ in 0..<frames {
+        now += 1.0 / 60
+        world.setDock(CGRect(x: 94, y: y, width: 1282, height: 83), now: now)
+        world.syncWindows(wins, now: now)
+        world.step(dt: 1.0 / 60)
+    }
+}
+Settings.shared.paused = true          // чтобы свежий снег не путал счёт
+run(4)
+let ground = world.areas[0].ground
+func groundUnderDock() -> Float {
+    var sum: Float = 0
+    var x: Float = 100
+    while x < 1370 { sum += ground.height(at: x); x += ground.cell }
+    return sum * ground.cell
+}
+dockStep(956, frames: 3)
+let lying = groundUnderDock()
+let flakesBeforeDock = world.areas[0].flakes.count
+for y in dockUp { dockStep(y) }
+let onDock = world.dockState?.snow ?? 0
+check(world.dockShown && world.dockState?.frame.minY == 863, "Dock выехал: верх на \(world.dockState?.frame.minY ?? -1)")
+check(lying > 1000 && groundUnderDock() < lying * 0.05, "сугроб над Dock подхвачен: у кромки было \(Int(lying)), осталось \(Int(groundUnderDock())) pt²")
+check(onDock > lying * 0.6 && onDock < lying * 1.0, "на крыше Dock \(Int(onDock)) pt² из \(Int(lying)) — часть раскрошилась")
+check(world.areas[0].flakes.count > flakesBeforeDock, "на подъёме снег крошится: снежинок \(flakesBeforeDock) → \(world.areas[0].flakes.count)")
+let man = world.balls
+check(man.count == 3 && man.allSatisfy { $0.onDock && $0.resting && $0.y + $0.r < 875 },
+      "снеговик поднялся вместе с Dock: низы комьев \(man.map { Int($0.y + $0.r) }), на Dock: \(man.map { $0.onDock })")
+run(0.15)
+render("4-dock-up", lightWindows: false)
+dockStep(863, frames: 60)
+let settled = world.dockState?.snow ?? 0
+for y in dockUp.reversed() { dockStep(y) }
+dockStep(956, frames: 2)
+let back = groundUnderDock()
+check(!world.dockShown && (world.dockState?.snow ?? 1) < 0.01, "Dock спрятался, на нём пусто")
+check(back > settled * 0.75, "снег с Dock лёг обратно у кромки: \(Int(back)) pt² (на Dock было \(Int(settled)))")
+run(1.5)
+let down = world.balls
+let lowest = down.max { $0.y < $1.y }
+check(down.count == 3 && down.allSatisfy { !$0.onDock && $0.resting } && (lowest.map { $0.y + $0.r > 940 } ?? false),
+      "снеговик опустился к кромке, не развалившись: низы комьев \(down.map { Int($0.y + $0.r) })")
+Settings.shared.paused = false
+world.setDock(nil, now: now)
 
 // Медленное перетаскивание (300 pt/с, 1 с): снег частично держится.
 print("Медленное перетаскивание окна 10:")

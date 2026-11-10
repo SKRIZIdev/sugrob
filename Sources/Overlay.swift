@@ -29,40 +29,68 @@ final class SnowView: MTKView {
 }
 
 final class Overlay {
+    /// Высота полосы над нижней кромкой, где рисуется снег на Dock: Dock (~83 pt) + отступ + шапка.
+    static let dockStrip: CGFloat = 170
+
     let screen: NSScreen
+    /// Основной слой: снегопад, сугробы на окнах и у кромки, снежки.
     let window: OverlayWindow
     let view: SnowView
     let renderer: ScreenRenderer
+    /// Тонкий слой прямо над Dock: только снег на Dock — он лежит перед окнами, как и сам Dock.
+    let dockWindow: OverlayWindow
+    let dockView: SnowView
+    let dockRenderer: ScreenRenderer
 
     init(screen: NSScreen, area: ScreenArea, world: SnowWorld) {
         self.screen = screen
-        window = OverlayWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
-        window.setFrame(screen.frame, display: false)
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = false
-        window.ignoresMouseEvents = true
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
-        window.isReleasedWhenClosed = false
-        window.animationBehavior = .none
-
-        view = SnowView(frame: NSRect(origin: .zero, size: screen.frame.size), device: GPU.shared.device)
-        view.colorPixelFormat = .bgra8Unorm
-        view.clearColor = MTLClearColorMake(0, 0, 0, 0)
-        view.isPaused = true
-        view.enableSetNeedsDisplay = false
-        view.framebufferOnly = true
-        view.autoResizeDrawable = false
-        view.wantsLayer = true
-        view.layer?.isOpaque = false
-        view.layer?.backgroundColor = .clear
+        window = Overlay.makeWindow(screen.frame)
+        view = Overlay.makeView(screen.frame.size, world)
         renderer = ScreenRenderer(area: area, world: world)
         view.delegate = renderer
-        view.world = world
         window.contentView = view
+
+        let strip = NSRect(x: screen.frame.minX, y: screen.frame.minY, width: screen.frame.width, height: Overlay.dockStrip)
+        dockWindow = Overlay.makeWindow(strip)
+        dockWindow.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.dockWindow)) + 1)
+        dockView = Overlay.makeView(strip.size, world)
+        let region = CGRect(x: area.bounds.minX, y: area.bounds.maxY - Overlay.dockStrip,
+                            width: area.bounds.width, height: Overlay.dockStrip)
+        dockRenderer = ScreenRenderer(area: area, world: world, dockLayer: true, region: region)
+        dockView.delegate = dockRenderer
+        dockWindow.contentView = dockView
+
         setRenderScale(eco: world.eco)
         setLayer(overWindows: Settings.shared.overWindows)
-        window.orderFrontRegardless()
+        dockWindow.orderFrontRegardless()
+    }
+
+    private static func makeWindow(_ frame: NSRect) -> OverlayWindow {
+        let w = OverlayWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+        w.setFrame(frame, display: false)
+        w.isOpaque = false
+        w.backgroundColor = .clear
+        w.hasShadow = false
+        w.ignoresMouseEvents = true
+        w.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        w.isReleasedWhenClosed = false
+        w.animationBehavior = .none
+        return w
+    }
+
+    private static func makeView(_ size: NSSize, _ world: SnowWorld) -> SnowView {
+        let v = SnowView(frame: NSRect(origin: .zero, size: size), device: GPU.shared.device)
+        v.colorPixelFormat = .bgra8Unorm
+        v.clearColor = MTLClearColorMake(0, 0, 0, 0)
+        v.isPaused = true
+        v.enableSetNeedsDisplay = false
+        v.framebufferOnly = true
+        v.autoResizeDrawable = false
+        v.wantsLayer = true
+        v.layer?.isOpaque = false
+        v.layer?.backgroundColor = .clear
+        v.world = world
+        return v
     }
 
     /// Поверх окон: над окнами и Dock (20), под строкой меню (24) — значок в строке меню всегда нажимается.
@@ -79,7 +107,19 @@ final class Overlay {
     func setRenderScale(eco: Bool) {
         let scale = min(screen.backingScaleFactor, eco ? 1 : 1.5)
         renderer.scale = Float(scale)
+        dockRenderer.scale = Float(scale)
         view.drawableSize = CGSize(width: screen.frame.width * scale, height: screen.frame.height * scale)
+        dockView.drawableSize = CGSize(width: screen.frame.width * scale, height: Overlay.dockStrip * scale)
+    }
+
+    func draw() {
+        view.draw()
+        dockView.draw()
+    }
+
+    func hide() {
+        window.orderOut(nil)
+        dockWindow.orderOut(nil)
     }
 
     func setInteractive(_ on: Bool) {

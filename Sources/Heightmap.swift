@@ -35,6 +35,27 @@ final class Heightmap {
     }
 
     var total: Float { h.reduce(0, +) * cell }
+    var width: Float { Float(h.count - 1) * cell }
+
+    /// Переложить снег из `other` сюда: ячейка j забирает снег из точки `j·cell + offset` профиля
+    /// `other` (в его координатах), а там снег обнуляется. Сверх предела высоты — теряется.
+    func absorb(_ other: Heightmap, offset: Float) {
+        for j in h.indices {
+            let v = other.height(at: Float(j) * cell + offset)
+            if v > 0 { h[j] = min(limit[j], h[j] + v) }
+        }
+        other.zero(from: offset, to: offset + width)
+        dirty = true
+    }
+
+    /// Обнулить снег на отрезке [a, b] (в координатах профиля).
+    func zero(from a: Float, to b: Float) {
+        let i0 = max(0, Int((a / cell).rounded(.up)))
+        let i1 = min(h.count - 1, Int((b / cell).rounded(.down)))
+        guard i0 <= i1 else { return }
+        for i in i0...i1 { h[i] = 0 }
+        dirty = true
+    }
 
     /// Подогнать под новую ширину окна, растянув профиль.
     func resize(width: Float) {

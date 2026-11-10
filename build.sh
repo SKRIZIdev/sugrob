@@ -29,7 +29,10 @@ swiftc -O -swift-version 5 ${EXTRA[@]+"${EXTRA[@]}"} \
 
 cp Info.plist "$APP/Contents/Info.plist"
 [ -f Resources/AppIcon.icns ] && cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-codesign --force --sign - "$APP" >/dev/null
+# Подпись ad-hoc, но с требованием «только идентификатор»: по умолчанию в требование попадает хеш
+# сборки, и выданный доступ (Универсальный доступ для снега на Dock) слетал после каждой пересборки.
+codesign --force --sign - --identifier com.ivan.sugrob \
+  --requirements '=designated => identifier "com.ivan.sugrob"' "$APP" 2>/dev/null
 echo "Собрано: $APP"
 
 if [ "${1:-}" = "install" ]; then

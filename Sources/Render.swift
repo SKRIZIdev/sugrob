@@ -127,6 +127,11 @@ final class GPU {
 /// чтобы не перезаписывать то, что ещё читает видеокарта.
 final class ScreenRenderer: NSObject, MTKViewDelegate {
     let area: ScreenArea
+    /// Слой снега на Dock: рисует только его и только в полосе `region` над Dock.
+    let dockLayer: Bool
+    /// Какой кусок экрана покрывает слой, глобальные CG-координаты.
+    let region: CGRect
+    private var hadContent = true
     private unowned let world: SnowWorld
     private var points: [PointVertex] = []
     private var tris: [TriVertex] = []
@@ -136,9 +141,11 @@ final class ScreenRenderer: NSObject, MTKViewDelegate {
     /// Пикселей кадра на точку экрана.
     var scale: Float = 1.5
 
-    init(area: ScreenArea, world: SnowWorld) {
+    init(area: ScreenArea, world: SnowWorld, dockLayer: Bool = false, region: CGRect? = nil) {
         self.area = area
         self.world = world
+        self.dockLayer = dockLayer
+        self.region = region ?? area.bounds
         super.init()
         for _ in 0..<3 { ring.append((buffer(64 * 1024), buffer(256 * 1024))) }
     }
@@ -151,7 +158,11 @@ final class ScreenRenderer: NSObject, MTKViewDelegate {
 
     func draw(in view: MTKView) {
         inflight.wait()
-        let r = world.buildFrame(for: area, points: &points, tris: &tris)
+        let r = world.buildFrame(for: area, dockLayer: dockLayer, points: &points, tris: &tris)
+        // Пустой слой Dock второй раз подряд не перерисовываем — кадр и так прозрачный.
+        let hasContent = !points.isEmpty || !tris.isEmpty
+        if dockLayer && !hasContent && !hadContent { inflight.signal(); return }
+        hadContent = hasContent
         slot = (slot + 1) % ring.count
         let pBytes = points.count * MemoryLayout<PointVertex>.stride
         let tBytes = tris.count * MemoryLayout<TriVertex>.stride
@@ -167,8 +178,8 @@ final class ScreenRenderer: NSObject, MTKViewDelegate {
             inflight.signal()
             return
         }
-        var u = Uniforms(origin: SIMD2(Float(area.bounds.minX), Float(area.bounds.minY)),
-                         size: SIMD2(Float(area.bounds.width), Float(area.bounds.height)),
+        var u = Uniforms(origin: SIMD2(Float(region.minX), Float(region.minY)),
+                         size: SIMD2(Float(region.width), Float(region.height)),
                          scale: scale)
         enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
         // Порядок слоёв: сугробы → шары → морковки → угольки и снежинки.

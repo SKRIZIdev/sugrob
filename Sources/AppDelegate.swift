@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let args = ProcessInfo.processInfo.arguments
         if args.contains("--fast") { world.depositBoost = 12 }
+        NSLog("Sugrob: запуск, доступ «Универсальный доступ» = %@", AXIsProcessTrusted() ? "есть" : "нет")
         setupStatusItem()
         rebuildOverlays()
         observe()
@@ -71,20 +72,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if world.syncWindows(tracker.poll(), now: now) { fastPollUntil = now + 0.5 }
             nextPoll = now < fastPollUntil ? now : now + 1.0 / 6
         }
-        if now >= nextDockPoll {
+        // Dock: пока он на экране или курсор у нижней кромки (сейчас выедет) — каждый кадр,
+        // чтобы снег ехал вместе с ним; иначе 4 раза в секунду.
+        let cocoa = NSEvent.mouseLocation
+        let nearBottom = overlays.contains { o in
+            o.screen.frame.minX <= cocoa.x && cocoa.x < o.screen.frame.maxX && cocoa.y - o.screen.frame.minY < 14
+        }
+        if world.dockShown || nearBottom || now >= nextDockPoll {
             world.setDock(tracker.dockFrame(), now: now)
-            nextDockPoll = now + 1.5
+            nextDockPoll = now + 0.25
         }
         world.step(dt: Float(dt))
         if world.needsRedraw {
-            for o in overlays { o.view.draw() }
+            for o in overlays { o.draw() }
         }
     }
 
     // MARK: Экраны и состояние системы
 
     private func rebuildOverlays() {
-        for o in overlays { o.window.orderOut(nil) }
+        for o in overlays { o.hide() }
         overlays.removeAll()
         let screens = NSScreen.screens
         world.setScreens(screens.map { s in
@@ -247,7 +254,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func requestDockAccess() {
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        if AXIsProcessTrustedWithOptions([key: false] as CFDictionary) { return }
+        let alert = NSAlert()
+        alert.messageText = "Снегу на Dock нужен «Универсальный доступ»"
+        alert.informativeText = """
+            По нему Сугроб узнаёт, где на экране Dock. Содержимое окон не читается.
+
+            Если «Сугроб» уже есть в списке, но включён, — удалите его кнопкой «−» и включите снова: \
+            старое разрешение было выдано другой сборке и к этой не подходит.
+            """
+        alert.addButton(withTitle: "Открыть настройки")
+        alert.addButton(withTitle: "Отмена")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
         _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
     }
     @objc private func shovel() { world.shovel() }
     @objc private func toggleEco() {
@@ -275,7 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             applyTool()
             link?.invalidate()
             link = nil
-            for o in overlays { o.window.orderOut(nil) }
+            for o in overlays { o.hide() }
             overlays.removeAll()
         }
     }

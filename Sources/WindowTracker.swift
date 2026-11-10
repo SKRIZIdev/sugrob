@@ -49,11 +49,36 @@ final class WindowTracker {
         return out
     }
 
+    private var dockPID: pid_t = 0
+    private var dockList: AXUIElement?
+
     /// Рамка значков Dock. Нужен доступ «Универсальный доступ»; без него — nil.
+    /// Спрятанный Dock система держит за нижней кромкой экрана; во время анимации отдаёт
+    /// промежуточные положения. Запрос ~0.3 мс, элемент списка кэшируется.
     func dockFrame() -> CGRect? {
-        guard AXIsProcessTrusted(),
-              let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return nil }
-        let app = AXUIElementCreateApplication(dock.processIdentifier)
+        guard AXIsProcessTrusted() else { dockList = nil; return nil }
+        if dockList == nil || NSRunningApplication(processIdentifier: dockPID)?.isTerminated != false {
+            dockList = findDockList()
+        }
+        guard let el = dockList else { return nil }
+        var pv: CFTypeRef?, sv: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXPositionAttribute as CFString, &pv) == .success,
+              AXUIElementCopyAttributeValue(el, kAXSizeAttribute as CFString, &sv) == .success,
+              let pv, let sv,
+              CFGetTypeID(pv) == AXValueGetTypeID(), CFGetTypeID(sv) == AXValueGetTypeID() else {
+            dockList = nil         // Dock перезапустился — найдём заново в следующий раз
+            return nil
+        }
+        var p = CGPoint.zero, s = CGSize.zero
+        AXValueGetValue(pv as! AXValue, .cgPoint, &p)
+        AXValueGetValue(sv as! AXValue, .cgSize, &s)
+        return s.width > 0 && s.height > 0 ? CGRect(origin: p, size: s) : nil
+    }
+
+    private func findDockList() -> AXUIElement? {
+        guard let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return nil }
+        dockPID = dock.processIdentifier
+        let app = AXUIElementCreateApplication(dockPID)
         AXUIElementSetMessagingTimeout(app, 0.25)
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(app, kAXChildrenAttribute as CFString, &value) == .success,
@@ -61,16 +86,10 @@ final class WindowTracker {
         for el in children {
             var role: CFTypeRef?
             AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &role)
-            guard (role as? String) == (kAXListRole as String) else { continue }
-            var pv: CFTypeRef?, sv: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(el, kAXPositionAttribute as CFString, &pv) == .success,
-                  AXUIElementCopyAttributeValue(el, kAXSizeAttribute as CFString, &sv) == .success,
-                  let pv, let sv,
-                  CFGetTypeID(pv) == AXValueGetTypeID(), CFGetTypeID(sv) == AXValueGetTypeID() else { continue }
-            var p = CGPoint.zero, s = CGSize.zero
-            AXValueGetValue(pv as! AXValue, .cgPoint, &p)
-            AXValueGetValue(sv as! AXValue, .cgSize, &s)
-            if s.width > 0, s.height > 0 { return CGRect(origin: p, size: s) }
+            if (role as? String) == (kAXListRole as String) {
+                AXUIElementSetMessagingTimeout(el, 0.25)
+                return el
+            }
         }
         return nil
     }
