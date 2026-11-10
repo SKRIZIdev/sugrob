@@ -98,9 +98,245 @@ final class GingerbreadScene {
             w += 1
         }
         puffs.removeLast(puffs.count - w)
+        windNow = wind
+        stepMan(dt)
         let s = solid
         defer { wasSolid = s }
         return (visible, s != wasSolid)
+    }
+
+    // MARK: Пряничный человечек
+    //
+    // Раз в 35–75 с (первый раз — через ~7 с) выходит из двери с лопаткой, машет «привет», трижды
+    // черпает сугроб у дома и подбрасывает снег в сторону, возвращается — дверь закрывается.
+
+    private enum Phase { case inside, opening, walkOut, wave, dig, walkBack, entering, closing }
+    private var phase: Phase = .inside
+    private var phaseT: Float = 0
+    private var nextVisit: Float = 7
+    private var manX: Float = 55              // в координатах сцены
+    private var facing: Float = 1
+    private var stride: Float = 0
+    private var scoops = 0
+    private var loaded = false
+    private var doorOpen: Float = 0
+    private var manAlpha: Float = 0
+    private var windNow: Float = 0
+
+    /// Связь с миром: верх сугроба под глобальным x; копнуть (x, полуширина) → снятая площадь;
+    /// бросить снег (откуда, скорость, площадь). Якорь сцены обновляет мир каждый шаг.
+    var groundTop: ((Float) -> Float)?
+    var dig: ((Float, Float) -> Float)?
+    var toss: ((SIMD2<Float>, SIMD2<Float>, Float) -> Void)?
+    var anchor = SIMD2<Float>(0, 0)
+
+    var manPhase: String { "\(phase)" }
+    func visitSoon() { if phase == .inside { nextVisit = 0 } }
+
+    private func go(_ p: Phase) { phase = p; phaseT = 0 }
+
+    /// y верха сугроба под x сцены — в координатах сцены.
+    private func groundY(_ x: Float) -> Float {
+        guard let g = groundTop else { return 0 }
+        return (g(anchor.x + x * scale) - anchor.y) / scale
+    }
+
+    private func walk(to target: Float, _ dt: Float) -> Bool {
+        let step = 20 * dt
+        stride += dt * 9
+        if abs(target - manX) <= step { manX = target; return true }
+        manX += target > manX ? step : -step
+        return false
+    }
+
+    /// Лопатка: угол (в системе человечка, x — куда смотрит) в цикле одного замаха c ∈ 0…1.
+    private func shovelAngle(_ c: Float) -> Float {
+        let rest: Float = -0.35, down: Float = 0.95, up: Float = -0.9
+        if c < 0.4 { return rest + (down - rest) * (c / 0.4) }
+        if c < 0.75 { return down + (up - down) * ((c - 0.4) / 0.35) }
+        return up + (rest - up) * ((c - 0.75) / 0.25)
+    }
+    /// Где край лопатки в координатах сцены.
+    private func bladeTip(_ angle: Float) -> SIMD2<Float> {
+        let grip = SIMD2<Float>(manX + facing * 2, groundY(manX) - 13)
+        return grip + SIMD2(facing * cos(angle), sin(angle)) * 19
+    }
+
+    private func stepMan(_ dt: Float) {
+        guard enabled, !dying, t > 1.2 else {
+            phase = .inside
+            manAlpha = 0
+            doorOpen = max(0, doorOpen - dt * 3)
+            return
+        }
+        phaseT += dt
+        switch phase {
+        case .inside:
+            doorOpen = max(0, doorOpen - dt / 0.35)
+            nextVisit -= dt
+            if nextVisit <= 0 { go(.opening) }
+        case .opening:
+            doorOpen = min(1, phaseT / 0.35)
+            if phaseT >= 0.35 { manX = 55; facing = 1; manAlpha = 0; go(.walkOut) }
+        case .walkOut:
+            manAlpha = min(1, phaseT / 0.25)
+            if walk(to: 86, dt) { go(.wave) }
+        case .wave:
+            if phaseT >= 0.9 { scoops = 0; go(.dig) }
+        case .dig:
+            let c = phaseT
+            if c >= 0.4 && c < 0.75 && !loaded {
+                // Лопатка в сугробе — черпнул.
+                let tip = bladeTip(shovelAngle(0.4))
+                _ = dig?(anchor.x + tip.x * scale, 5 * scale)
+                loaded = true
+            }
+            if c >= 0.75 && loaded {
+                // Замах вверх — снег летит в сторону, подальше от дома.
+                let tip = bladeTip(shovelAngle(0.75))
+                toss?(anchor + tip * scale, SIMD2(facing * 150, -170) * scale, 30 * scale * scale)
+                loaded = false
+            }
+            if c >= 1.0 {
+                scoops += 1
+                manX += 3
+                phaseT = 0
+                if scoops >= 3 { facing = -1; go(.walkBack) }
+            }
+        case .walkBack:
+            if walk(to: 55, dt) { go(.entering) }
+        case .entering:
+            manAlpha = max(0, 1 - phaseT / 0.3)
+            if phaseT >= 0.3 { go(.closing) }
+        case .closing:
+            doorOpen = max(0, 1 - phaseT / 0.35)
+            if phaseT >= 0.35 { nextVisit = rng.range(35...75); go(.inside) }
+        }
+    }
+
+    private func drawMan(_ o: SIMD2<Float>, _ t: inout [TriVertex], _ pt: inout [PointVertex]) {
+        guard manAlpha > 0.01, phase != .inside else { return }
+        let k = scale, a = manAlpha
+        let gy = groundY(manX)
+        let walking = phase == .walkOut || phase == .walkBack
+        let bob: Float = walking ? -abs(sin(stride)) * 1.2 : 0
+        // Человечек → координаты сцены → экран; x отражается, куда он смотрит.
+        func P(_ x: Float, _ y: Float) -> SIMD2<Float> { o + SIMD2(manX + x * facing, gy + y + bob) * k }
+        let body = SIMD4<Float>(0.80, 0.49, 0.25, a), bodyLow = SIMD4<Float>(0.66, 0.38, 0.19, a)
+        let icingC = SIMD4<Float>(0.99, 0.98, 0.96, a)
+        func disc(_ c: SIMD2<Float>, _ r: Float, _ col: SIMD4<Float>) {
+            let n = 14
+            for i in 0..<n {
+                let a0 = Float(i) / Float(n) * 2 * .pi, a1 = Float(i + 1) / Float(n) * 2 * .pi
+                t.append(TriVertex(pos: P(c.x, c.y), color: col))
+                t.append(TriVertex(pos: P(c.x + cos(a0) * r, c.y + sin(a0) * r), color: col))
+                t.append(TriVertex(pos: P(c.x + cos(a1) * r, c.y + sin(a1) * r), color: col))
+            }
+        }
+        func limb(_ p0: SIMD2<Float>, _ p1: SIMD2<Float>, _ r: Float, _ c0: SIMD4<Float>, _ c1: SIMD4<Float>) {
+            let d = p1 - p0, len = max(simd_length(d), 0.001)
+            let n = SIMD2<Float>(-d.y, d.x) / len * r
+            quad(&t, P((p0 + n).x, (p0 + n).y), P((p1 + n).x, (p1 + n).y), P((p1 - n).x, (p1 - n).y), P((p0 - n).x, (p0 - n).y), c0, c1, c1, c0)
+            disc(p0, r, c0)
+            disc(p1, r, c1)
+        }
+        func dot(_ x: Float, _ y: Float, _ size: Float, _ c: SIMD3<Float>, kind: Float) {
+            pt.append(PointVertex(pos: P(x, y), size: size * k, alpha: a, color: SIMD4(c, kind)))
+        }
+
+        // Поза рук и лопатки.
+        let shoulderL = SIMD2<Float>(-5, -16.5), shoulderR = SIMD2<Float>(5, -16.5)
+        var handL = SIMD2<Float>(-9, -10), handR = SIMD2<Float>(9, -10)
+        var shovel: Float? = nil
+        switch phase {
+        case .walkOut, .walkBack:
+            let sw = sin(stride) * 2.5
+            handL += SIMD2(sw, 0); handR -= SIMD2(sw, 0)
+            shovel = -1.15                            // лопатка на плече
+        case .wave:
+            let wave = -2.2 + 0.45 * sin(phaseT * 15)
+            handR = shoulderR + SIMD2(cos(wave), sin(wave)) * 8.5
+            shovel = 1.35                             // лопатка у ноги
+        case .dig:
+            shovel = shovelAngle(phaseT)
+        default:
+            shovel = -1.15
+        }
+        let grip = SIMD2<Float>(2, -13)
+        var tip = grip
+        if let ang = shovel {
+            let dir = SIMD2<Float>(cos(ang), sin(ang))
+            tip = grip + dir * 19
+            if phase == .dig {
+                handL = grip + dir * 2.5
+                handR = grip + dir * 8.5
+            } else if phase != .wave {
+                handR = grip + dir * 4
+            }
+        }
+        // Ноги: на ходу — шаг.
+        let swing: Float = walking ? sin(stride) * 3.2 : 0
+        let wood = SIMD4<Float>(0.62, 0.40, 0.22, a), steel = SIMD4<Float>(0.86, 0.22, 0.22, a)
+        // Лопатка за человечком, когда на плече; перед ним — когда копает.
+        func drawShovel() {
+            guard shovel != nil else { return }
+            limb(grip - (tip - grip) * 0.12, tip, 0.8, wood, wood)
+            let d = simd_normalize(tip - grip), side = SIMD2<Float>(-d.y, d.x)
+            let b0 = tip - side * 3.2, b1 = tip + side * 3.2, b2 = tip + side * 2.6 + d * 5.5, b3 = tip - side * 2.6 + d * 5.5
+            quad(&t, P(b0.x, b0.y), P(b1.x, b1.y), P(b2.x, b2.y), P(b3.x, b3.y), steel, steel, steel, steel)
+            if loaded {
+                let snow = tip + d * 3 - SIMD2(0, 2.5)
+                dot(snow.x, snow.y, 5.5, SIMD3(0.98, 0.99, 1.0), kind: 2)
+            }
+        }
+        if phase != .dig { drawShovel() }
+        // Белый контур из глазури — как у настоящих пряничных человечков; заодно отделяет его от
+        // пряничной стены домика того же цвета.
+        let edge: Float = 0.9
+        limb(SIMD2(-3, -9), SIMD2(-4 + swing, -1), 2.9 + edge, icingC, icingC)
+        limb(SIMD2(3, -9), SIMD2(4 - swing, -1), 2.9 + edge, icingC, icingC)
+        limb(SIMD2(0, -17.5), SIMD2(0, -9.5), 6.2 + edge, icingC, icingC)
+        limb(shoulderL, handL, 2.6 + edge, icingC, icingC)
+        limb(shoulderR, handR, 2.6 + edge, icingC, icingC)
+        disc(SIMD2(0, -24.5), 5.6 + edge, icingC)
+        limb(SIMD2(-3, -9), SIMD2(-4 + swing, -1), 2.9, body, bodyLow)
+        limb(SIMD2(3, -9), SIMD2(4 - swing, -1), 2.9, body, bodyLow)
+        limb(SIMD2(0, -17.5), SIMD2(0, -9.5), 6.2, body, bodyLow)
+        limb(shoulderL, handL, 2.6, body, body)
+        limb(shoulderR, handR, 2.6, body, body)
+        disc(SIMD2(0, -24.5), 5.6, body)
+        // Зима: шарф и вязаная шапка с помпоном.
+        let scarf = SIMD4<Float>(0.15, 0.55, 0.32, a), scarfLow = SIMD4<Float>(0.11, 0.44, 0.25, a)
+        let sway = (walking ? sin(stride * 0.5) * 1.6 : 0) + max(-2, min(2, windNow * 0.02 * facing))
+        let tailEnd = SIMD2<Float>(-6.8 - sway, -12)
+        limb(SIMD2(-3.8, -19.2), tailEnd, 1.35, scarf, scarfLow)
+        limb(SIMD2(-4.6, -19.4), SIMD2(4.6, -19.4), 1.55, scarf, scarf)
+        let hat = SIMD4<Float>(0.86, 0.17, 0.21, a), hatLow = SIMD4<Float>(0.70, 0.12, 0.16, a)
+        let domeN = 14
+        for i in 0..<domeN {
+            let a0 = Float.pi + Float.pi * Float(i) / Float(domeN), a1 = Float.pi + Float.pi * Float(i + 1) / Float(domeN)
+            t.append(TriVertex(pos: P(0, -27.6), color: hatLow))
+            t.append(TriVertex(pos: P(cos(a0) * 6.0, -27.6 + sin(a0) * 4.8), color: hat))
+            t.append(TriVertex(pos: P(cos(a1) * 6.0, -27.6 + sin(a1) * 4.8), color: hat))
+        }
+        limb(SIMD2(-5.5, -27.5), SIMD2(5.5, -27.5), 1.15, icingC, icingC)
+        pt.append(PointVertex(pos: P(0.8, -33.3), size: 3.8 * k, alpha: a, color: SIMD4(1, 1, 1, 1)))
+        if phase == .dig { drawShovel() }
+        // Глазурь: глаза, улыбка, пуговки-конфетки, оборки на руках и ногах.
+        let dark = SIMD3<Float>(0.18, 0.10, 0.07), white = SIMD3<Float>(0.99, 0.98, 0.96)
+        dot(-2.1, -25.6, 1.7, dark, kind: 2)
+        dot(2.1, -25.6, 1.7, dark, kind: 2)
+        for i in -1...1 { dot(Float(i) * 1.6, -22.4 + (i == 0 ? 0.5 : 0), 1.1, white, kind: 2) }
+        dot(0, -15.5, 2.6, SIMD3(0.90, 0.18, 0.22), kind: 4)
+        dot(0, -11.8, 2.6, SIMD3(0.22, 0.65, 0.35), kind: 4)
+        for h in [handL, handR] { dot(h.x, h.y, 1.5, white, kind: 2) }
+        dot(-4 + swing, -2.5, 1.5, white, kind: 2)
+        dot(4 - swing, -2.5, 1.5, white, kind: 2)
+        // Полоски и бахрома на конце шарфа.
+        let mid = (SIMD2<Float>(-3.8, -19.2) + tailEnd) / 2
+        dot(mid.x, mid.y, 1.3, white, kind: 2)
+        dot(tailEnd.x - 0.6, tailEnd.y + 1.6, 1.0, SIMD3(0.15, 0.55, 0.32), kind: 2)
+        dot(tailEnd.x + 0.6, tailEnd.y + 1.6, 1.0, SIMD3(0.15, 0.55, 0.32), kind: 2)
     }
 
     /// Кромки сцены в глобальных координатах.
@@ -134,6 +370,7 @@ final class GingerbreadScene {
             if fence > 0.01 { drawFence(o, fence, &tris, &points) }
             if house > 0.01 { drawHouse(o, house, &tris, &points) }
             if tree > 0.01 { drawTree(o, tree, star, lights, &tris, &points) }
+            if house >= 0.99 { drawMan(o, &tris, &points) }
         }
         for p in puffs {
             let k = p.age / p.life
@@ -188,6 +425,15 @@ final class GingerbreadScene {
             rect(x0, -41.8, x0 + 22, -40.2, icing, icing)
         }
         // Круглое окошко на фронтоне.
+        func arch(_ cx: Float, _ cy: Float, _ rx: Float, _ ry: Float, _ c: SIMD4<Float>) {
+            let n = 14
+            for k in 0..<n {
+                let a0 = Float.pi + Float.pi * Float(k) / Float(n), a1 = Float.pi + Float.pi * Float(k + 1) / Float(n)
+                t.append(TriVertex(pos: P(cx, cy), color: c))
+                t.append(TriVertex(pos: P(cx + cos(a0) * rx, cy + sin(a0) * ry), color: c))
+                t.append(TriVertex(pos: P(cx + cos(a1) * rx, cy + sin(a1) * ry), color: c))
+            }
+        }
         disc(55, -90, 10, icing)
         disc(55, -90, 7.5, glassTop)
         rect(54.3, -97.5, 55.7, -82.5, icing, icing)
@@ -196,8 +442,16 @@ final class GingerbreadScene {
         rect(41.5, -25, 68.5, 0, icing, icing)
         disc(55, -25, 13.5, icing, .pi, 2 * .pi)
         let door = SIMD4<Float>(0.72, 0.18, 0.20, 1), doorLow = SIMD4<Float>(0.56, 0.12, 0.14, 1)
-        rect(44, -25, 66, 0, door, doorLow)
-        disc(55, -25, 11, door, .pi, 2 * .pi)
+        if doorOpen > 0 {
+            // Проём: тёплый свет из дома.
+            let lit = SIMD4<Float>(1.0, 0.80, 0.45, 1), litLow = SIMD4<Float>(0.96, 0.58, 0.24, 1)
+            rect(44, -25, 66, 0, lit, litLow)
+            disc(55, -25, 11, lit, .pi, 2 * .pi)
+        }
+        // Створка поворачивается на левых петлях — в проекции сужается.
+        let dw = 22 * (1 - 0.82 * doorOpen), dcx = 44 + dw / 2
+        rect(44, -25, 44 + dw, 0, door, doorLow)
+        arch(dcx, -25, dw / 2, 11, door)
         // Скаты крыши — шоколадные полосы с конька к карнизам.
         roofBand(&t, P(-14, -64), P(55, -120), outward: SIMD2(-0.630, -0.776), thick: 11 * s * scale)
         roofBand(&t, P(55, -120), P(124, -64), outward: SIMD2(0.630, -0.776), thick: 11 * s * scale)
@@ -221,7 +475,7 @@ final class GingerbreadScene {
             dot(cx, -3, 64, warm, kind: 3, alpha: 0.16 * flicker)
         }
         dot(55, -90, 40, warm, kind: 3, alpha: 0.26 * flicker)
-        dot(55, -14, 30, warm, kind: 3, alpha: 0.10 * flicker)
+        dot(55, -14, 30, warm, kind: 3, alpha: (0.10 + 0.4 * doorOpen) * flicker)
         // Глазурь фестонами по нижнему краю скатов и капельки.
         for (a, b, inward) in [(SIMD2<Float>(-14, -64), SIMD2<Float>(55, -120), SIMD2<Float>(0.630, 0.776)),
                                (SIMD2<Float>(55, -120), SIMD2<Float>(124, -64), SIMD2<Float>(-0.630, 0.776))] {
@@ -244,14 +498,15 @@ final class GingerbreadScene {
         ]
         for g in gum { dot(g.0, g.1, 7.5, g.2, kind: 4) }
         // Венок с бантом и дверная ручка.
+        let squeeze = 1 - 0.82 * doorOpen
         for k in 0..<12 {
             let a = Float(k) / 12 * 2 * .pi
-            dot(55 + cos(a) * 6.5, -27 + sin(a) * 6.5, 4.6, SIMD3(0.16, 0.50, 0.26), kind: 4)
+            dot(dcx + cos(a) * 6.5 * squeeze, -27 + sin(a) * 6.5, 4.6, SIMD3(0.16, 0.50, 0.26), kind: 4)
         }
-        dot(55, -21, 3.4, SIMD3(0.90, 0.16, 0.20), kind: 4)
-        dot(52.2, -21.6, 3.0, SIMD3(0.90, 0.16, 0.20), kind: 4)
-        dot(57.8, -21.6, 3.0, SIMD3(0.90, 0.16, 0.20), kind: 4)
-        dot(62, -12, 4.2, SIMD3(0.98, 0.80, 0.35), kind: 4)
+        dot(dcx, -21, 3.4, SIMD3(0.90, 0.16, 0.20), kind: 4)
+        dot(dcx - 2.8 * squeeze, -21.6, 3.0, SIMD3(0.90, 0.16, 0.20), kind: 4)
+        dot(dcx + 2.8 * squeeze, -21.6, 3.0, SIMD3(0.90, 0.16, 0.20), kind: 4)
+        dot(44 + 18 * squeeze, -12, 4.2, SIMD3(0.98, 0.80, 0.35), kind: 4)
     }
 
     private func drawTree(_ o: SIMD2<Float>, _ s: Float, _ starLevel: Float, _ lights: Float,

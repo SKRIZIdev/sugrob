@@ -40,7 +40,7 @@ final class Overlay {
     let window: OverlayWindow
     let view: SnowView
     let renderer: ScreenRenderer
-    /// Тонкий слой прямо над Dock: только снег на Dock — он лежит перед окнами, как и сам Dock.
+    /// Тонкий слой у нижней кромки, под самим Dock, но над окнами: снег и снеговики на Dock.
     let dockWindow: OverlayWindow
     let dockView: SnowView
     let dockRenderer: ScreenRenderer
@@ -55,7 +55,10 @@ final class Overlay {
 
         let strip = NSRect(x: screen.frame.minX, y: screen.frame.minY, width: screen.frame.width, height: Overlay.dockStrip)
         dockWindow = Overlay.makeWindow(strip)
-        dockWindow.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.dockWindow)) + 1)
+        // На единицу НИЖЕ Dock: выше всех обычных окон (снег на Dock виден перед ними), но под самим
+        // Dock. Окно выше Dock у нижней кромки не давало скрытому Dock выезжать по наведению курсора.
+        // Снег лежит над плашкой Dock, так что Dock его не закрывает.
+        dockWindow.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.dockWindow)) - 1)
         dockView = Overlay.makeView(strip.size, world)
         let region = CGRect(x: area.bounds.minX, y: area.bounds.maxY - Overlay.dockStrip,
                             width: area.bounds.width, height: Overlay.dockStrip)

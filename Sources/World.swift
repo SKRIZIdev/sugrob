@@ -400,6 +400,24 @@ final class SnowWorld {
         }
     }
 
+    /// Пряничный человечек стоит на сугробе, копает его и бросает снег — через мир.
+    private func connectScene() {
+        scene.groundTop = { [unowned self] x in
+            guard let a = self.areas.first(where: { Float($0.bounds.minX) <= x && x < Float($0.bounds.maxX) }) ?? self.areas.first else { return 0 }
+            return a.groundSurface.top(at: x)
+        }
+        scene.dig = { [unowned self] x, half in
+            guard let a = self.areas.first else { return 0 }
+            self.changed = true
+            return a.ground.carve(at: x - Float(a.bounds.minX), halfWidth: half, fraction: 0.6)
+        }
+        scene.toss = { [unowned self] from, v, amount in
+            self.emit(x: from.x, y: from.y, vx: v.x, vy: v.y, area: max(amount, 12), spread: 3, stick: 0.4)
+        }
+    }
+
+    init() { connectScene() }
+
     /// Сменить размер домика (снег с крыши осыпается).
     func setHouseScale(_ k: Float) {
         guard abs(k - scene.scale) > 0.001 else { return }
@@ -528,6 +546,7 @@ final class SnowWorld {
         stepDock(dt)
         let p = settings.intensity
         let wind = settings.wind.speed + gust
+        scene.anchor = sceneAnchor
         let (sceneActive, sceneSolid) = scene.step(dt, wind: wind)
         if sceneSolid {
             if !scene.solid { dropSceneSnow() }

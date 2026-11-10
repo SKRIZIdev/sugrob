@@ -415,5 +415,34 @@ world.scene.setEnabled(false)
 run(0.8)
 check(!world.scene.solid && world.surfaces.allSatisfy { $0.slope == 0 }, "домик убран, крыша больше не кромка")
 
+// Пряничный человечек: выходит, машет, копает сугроб у дома, возвращается.
+print("Пряничный человечек:")
+world.scene.setEnabled(true)
+run(1.6)
+let k = world.scene.scale, o = world.scene.anchor
+func groundAt(_ sx: Float) -> Float { world.areas[0].ground.height(at: o.x + sx * k - Float(world.areas[0].bounds.minX)) }
+// подсыпать снега у дома, чтобы было что копать
+for sx in stride(from: Float(60), to: 140, by: 2) { world.areas[0].ground.deposit(at: o.x + sx * k, area: 30) }
+let snowBefore = (95...110).map { groundAt(Float($0)) }.reduce(0, +)
+Settings.shared.paused = true
+world.scene.visitSoon()
+var seen: [String] = []
+var frames = 0
+let film2 = ProcessInfo.processInfo.environment["SNAP_FILM"] != nil
+while frames < 60 * 14 {
+    run(1.0 / 60); frames += 1
+    let ph = world.scene.manPhase
+    if seen.last != ph {
+        seen.append(ph)
+        if film2 && (ph == "wave" || ph == "dig" || ph == "walkBack") { run(0.3); frames += 18; render("man-\(ph)", lightWindows: false) }
+    }
+    if seen.count > 2 && ph == "inside" { break }
+}
+let snowAfter = (95...110).map { groundAt(Float($0)) }.reduce(0, +)
+check(seen == ["opening", "walkOut", "wave", "dig", "walkBack", "entering", "closing", "inside"],
+      "человечек прошёл весь путь: \(seen.joined(separator: " → ")) за \(String(format: "%.1f", Float(frames) / 60)) с")
+check(snowAfter < snowBefore * 0.75, "расчистил сугроб у дома: \(Int(snowBefore)) → \(Int(snowAfter))")
+Settings.shared.paused = false
+
 print(failures == 0 ? "Все проверки прошли" : "Провалено проверок: \(failures)")
 exit(failures == 0 ? 0 : 1)
