@@ -98,6 +98,8 @@ struct Ball {
 
 final class ScreenArea {
     let id: CGDirectDisplayID
+    /// Постоянный ключ дисплея — по нему настройки помнят, на каком экране домик и экскаватор.
+    let key: String
     let bounds: CGRect
     var flakes: [Flake] = []
     let ground: Heightmap
@@ -106,6 +108,7 @@ final class ScreenArea {
 
     init(id: CGDirectDisplayID, bounds: CGRect) {
         self.id = id
+        key = Geo.screenKey(id)
         self.bounds = bounds
         ground = Heightmap(width: Float(bounds.width), maxH: 14)
     }
@@ -127,15 +130,23 @@ final class SnowWorld {
     private weak var dockArea: ScreenArea?
     private var dockTop: Float = 0       // где верх Dock нарисован сейчас
     private var dockRaised = false       // снег сейчас на крыше Dock, а не у кромки под ним
-    /// Пряничный домик с ёлкой в левом нижнем углу основного экрана.
+    /// Пряничный домик с ёлкой в левом нижнем углу своего экрана.
     let scene = GingerbreadScene()
-    /// Погрузчик, вывозящий сугроб за правый край экрана.
+    /// Погрузчик, вывозящий сугроб за правый край своего экрана.
     let excavator = Excavator()
+    /// Экраны домика и экскаватора: ключ дисплея, пусто или отключённый экран — основной.
+    private(set) var sceneScreen = ""
+    private(set) var excavatorScreen = ""
+    var sceneArea: ScreenArea? { area(forKey: sceneScreen) }
+    var excavatorArea: ScreenArea? { area(forKey: excavatorScreen) }
+    private func area(forKey k: String) -> ScreenArea? {
+        (k.isEmpty ? nil : areas.first { $0.key == k }) ?? areas.first
+    }
     /// Фокус на рабочем столе: macOS 26 рисует виджеты ярко только тогда, иначе — полупрозрачными.
     var desktopFocused = true
     private var widgetAlpha: Float = 1
     private var sceneAnchor: SIMD2<Float> {
-        guard let a = areas.first else { return .zero }
+        guard let a = sceneArea else { return .zero }
         return SIMD2(Float(a.bounds.minX) + 6 + 20 * scene.scale, Float(a.bounds.maxY))
     }
 
@@ -207,9 +218,46 @@ final class SnowWorld {
     // MARK: Экраны и окна
 
     func setScreens(_ list: [(CGDirectDisplayID, CGRect)]) {
+        let sceneWas = sceneArea?.key, excavatorWas = excavatorArea?.key
         areas = list.map { id, b in areas.first(where: { $0.id == id && $0.bounds == b }) ?? ScreenArea(id: id, bounds: b) }
+        // Экран домика отключили (или вернули) — снег с крыши пропал вместе с экраном, домик
+        // заново вырастает на новом месте; экскаватор заезжает туда же с пустым ковшом.
+        if sceneArea?.key != sceneWas, sceneWas != nil { scene.clearSnow(); scene.replay() }
+        if excavatorArea?.key != excavatorWas, excavatorWas != nil { updateExcavatorBounds(); excavator.relocate() }
         rebuildSurfaces()
         changed = true
+    }
+
+    /// Перенести домик на другой экран: снег с крыши осыпается на старом месте, на новом домик
+    /// вырастает с той же анимацией, что при включении.
+    func setSceneScreen(_ key: String) {
+        guard key != sceneScreen else { return }
+        let was = sceneArea
+        if was !== area(forKey: key) { dropSceneSnow() }
+        sceneScreen = key
+        guard sceneArea !== was else { return }
+        scene.replay()
+        updateExcavatorBounds()
+        rebuildSurfaces()
+        changed = true
+    }
+
+    /// Перенести экскаватор: груз пропадает, а сам он заезжает справа уже на новом экране.
+    func setExcavatorScreen(_ key: String) {
+        guard key != excavatorScreen else { return }
+        let was = excavatorArea
+        excavatorScreen = key
+        guard excavatorArea !== was else { return }
+        updateExcavatorBounds()
+        excavator.relocate()
+        changed = true
+    }
+
+    /// Где экскаватору можно ездить: его экран, а если там же домик — правее участка.
+    private func updateExcavatorBounds() {
+        guard let a = excavatorArea else { return }
+        excavator.bounds = (Float(a.bounds.minX), Float(a.bounds.maxX))
+        excavator.leftLimit = scene.enabled && sceneArea === a ? sceneAnchor.x + 320 * scene.scale : Float(a.bounds.minX)
     }
 
     /// Окна спереди назад. Возвращает true, если что-то сдвинулось или поменялся состав.
@@ -415,7 +463,7 @@ final class SnowWorld {
             return a.groundSurface.top(at: x)
         }
         scene.dig = { [unowned self] x, half in
-            guard let a = self.areas.first else { return 0 }
+            guard let a = self.sceneArea else { return 0 }
             self.changed = true
             return a.ground.carve(at: x - Float(a.bounds.minX), halfWidth: half, fraction: 0.6)
         }
@@ -428,12 +476,12 @@ final class SnowWorld {
         connectScene()
         excavator.groundTop = scene.groundTop
         excavator.carve = { [unowned self] x, half, frac in
-            guard let a = self.areas.first else { return 0 }
+            guard let a = self.excavatorArea else { return 0 }
             self.changed = true
             return a.ground.carve(at: x - Float(a.bounds.minX), halfWidth: half, fraction: frac)
         }
         excavator.snowAt = { [unowned self] x in
-            guard let a = self.areas.first else { return 0 }
+            guard let a = self.excavatorArea else { return 0 }
             return a.ground.height(at: x - Float(a.bounds.minX))
         }
         excavator.spill = { [unowned self] p, v in
@@ -571,10 +619,7 @@ final class SnowWorld {
         let p = settings.intensity
         let wind = settings.wind.speed + gust
         scene.anchor = sceneAnchor
-        if let a = areas.first {
-            excavator.bounds = (Float(a.bounds.minX), Float(a.bounds.maxX))
-            excavator.leftLimit = scene.enabled ? sceneAnchor.x + 320 * scene.scale : Float(a.bounds.minX)
-        }
+        updateExcavatorBounds()
         if excavator.step(dt) { changed = true }
         // Снег на виджетах тускнеет и проявляется вместе с ними.
         let wTarget: Float = desktopFocused ? 1 : 0.3
@@ -1114,14 +1159,14 @@ final class SnowWorld {
         var r = FrameRanges()
         let x0 = Float(a.bounds.minX), x1 = Float(a.bounds.maxX)
         // Домик рисуется первым: сугроб у кромки прикрывает его основание, снег на крыше — поверх.
-        if !dockLayer, a === areas.first, scene.visible { scene.draw(anchor: sceneAnchor, tris: &tris, points: &points) }
-        if !dockLayer, a === areas.first, excavator.visible { excavator.draw(tris: &tris, points: &points) }
+        if !dockLayer, a === sceneArea, scene.visible { scene.draw(anchor: sceneAnchor, tris: &tris, points: &points) }
+        if !dockLayer, a === excavatorArea, excavator.visible { excavator.draw(tris: &tris, points: &points) }
         for s in a.surfaces where s.isDock == dockLayer {
             appendCap(s, max(s.a, x0), min(s.b, x1), &tris,
                       scale: s.isDock ? dockLook.scale : 1,
                       alpha: s.isDock ? dockLook.alpha : (s.widget ? widgetAlpha : 1))
         }
-        if !dockLayer, a === areas.first { appendRoofRounding(&tris) }
+        if !dockLayer, a === sceneArea { appendRoofRounding(&tris) }
         if !dockLayer { appendCap(a.groundSurface, x0, x1, &tris) }
         if !dockLayer, let g = groundGhost, dockArea === a {
             let k = g.life / groundGhostLife

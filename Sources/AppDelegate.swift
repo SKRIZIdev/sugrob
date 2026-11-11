@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if args.contains("--fast") { world.depositBoost = 12 }
         setupStatusItem()
         rebuildOverlays()
+        world.setSceneScreen(settings.houseScreen)
+        world.setExcavatorScreen(settings.excavatorScreen)
         world.setHouseScale(settings.houseScale)
         world.scene.setEnabled(settings.house)
         world.step(dt: 0.001)                     // экскаватору нужны границы экрана
@@ -250,8 +252,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for (i, title) in Settings.houseSizeTitles.enumerated() {
             house.addItem(item(title, #selector(setHouseSize(_:)), tag: i, on: s.houseSize == i))
         }
+        // Несколько экранов — домик и экскаватор можно поселить на любом, каждого на своём.
+        let screens = screenChoices()
+        if screens.count > 1 {
+            addScreens(to: house, screens, current: world.sceneArea?.key, #selector(setHouseScreen(_:)))
+        }
         menu.addItem(submenu("Пряничный домик", house))
-        menu.addItem(item("Экскаватор", #selector(toggleExcavator), on: s.excavator))
+        if screens.count > 1 {
+            let exc = NSMenu()
+            exc.addItem(item("Показывать", #selector(toggleExcavator), on: s.excavator))
+            addScreens(to: exc, screens, current: world.excavatorArea?.key, #selector(setExcavatorScreen(_:)))
+            menu.addItem(submenu("Экскаватор", exc))
+        } else {
+            menu.addItem(item("Экскаватор", #selector(toggleExcavator), on: s.excavator))
+        }
         menu.addItem(item("Снег ложится на окна", #selector(toggleAccumulate), on: s.accumulate))
         if AXIsProcessTrusted() {
             let dock = item("Снег ложится на Dock", #selector(noop), on: true)
@@ -274,6 +288,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         it.tag = tag
         it.state = on ? .on : .off
         return it
+    }
+
+    /// Экраны для меню: ключ дисплея и имя («Встроенный дисплей Retina», имя монитора);
+    /// у одинаковых мониторов — с номером.
+    private var menuScreens: [String] = []
+    private func screenChoices() -> [(key: String, title: String)] {
+        var seen: [String: Int] = [:]
+        let list = NSScreen.screens.map { sc -> (key: String, title: String) in
+            let name = sc.localizedName
+            seen[name, default: 0] += 1
+            let n = seen[name]!
+            return (Geo.screenKey(Geo.displayID(sc)), n > 1 ? "\(name) \(n)" : name)
+        }
+        menuScreens = list.map(\.key)
+        return list
+    }
+
+    private func addScreens(to menu: NSMenu, _ screens: [(key: String, title: String)], current: String?, _ action: Selector) {
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: "Экран"))
+        for (i, sc) in screens.enumerated() {
+            menu.addItem(item(sc.title, action, tag: i, on: sc.key == current))
+        }
     }
 
     private func submenu(_ title: String, _ menu: NSMenu) -> NSMenuItem {
@@ -299,6 +336,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleExcavator() {
         settings.excavator.toggle()
         world.excavator.setEnabled(settings.excavator)
+    }
+    @objc private func setHouseScreen(_ sender: NSMenuItem) {
+        guard menuScreens.indices.contains(sender.tag) else { return }
+        settings.houseScreen = menuScreens[sender.tag]
+        world.setSceneScreen(settings.houseScreen)
+    }
+    @objc private func setExcavatorScreen(_ sender: NSMenuItem) {
+        guard menuScreens.indices.contains(sender.tag) else { return }
+        settings.excavatorScreen = menuScreens[sender.tag]
+        world.setExcavatorScreen(settings.excavatorScreen)
+        // Сразу показать, куда он переехал: отдыхающий тоже приезжает сейчас.
+        if settings.excavator { world.excavator.comeBackNow() }
     }
     @objc private func setHouseSize(_ sender: NSMenuItem) {
         settings.houseSize = sender.tag

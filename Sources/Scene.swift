@@ -63,6 +63,14 @@ final class GingerbreadScene {
 
     func clearSnow() { roofLeft.clear(); roofRight.clear(); chimneyTop.clear() }
 
+    /// Домик переехал на другой экран: вырастает заново, человечек дома, дым начинается с нуля.
+    func replay() {
+        puffs.removeAll()
+        phase = .inside; phaseT = 0; doorOpen = 0; manAlpha = 0; loaded = false
+        nextVisit = max(nextVisit, 7)
+        if enabled && !dying { t = 0; fade = 1 }
+    }
+
     /// Шаг сцены. `active` — нужна перерисовка, `solidChanged` — крыша стала/перестала быть кромкой.
     func step(_ dt: Float, wind: Float) -> (active: Bool, solidChanged: Bool) {
         clock += dt

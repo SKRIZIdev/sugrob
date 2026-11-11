@@ -526,5 +526,71 @@ run(3)
 check(!world.excavator.visible, "выключили — уехал за край и пропал")
 Settings.shared.paused = false
 
+// Два экрана: домик и экскаватор переезжают на второй, при его отключении — на основной, при
+// возвращении — назад (настройка помнит экран по ключу дисплея).
+print("Несколько экранов:")
+do {
+    Settings.shared.paused = true
+    let two = SnowWorld()
+    let b1 = CGRect(x: 0, y: 0, width: W, height: H), b2 = CGRect(x: W, y: -60, width: 1920, height: 1080)
+    two.setScreens([(1, b1), (2, b2)])
+    let a1 = two.areas[0], a2 = two.areas[1]
+    for a in [a1, a2] {
+        var x = Float(a.bounds.minX)
+        while x < Float(a.bounds.maxX) { a.ground.deposit(at: x - Float(a.bounds.minX), area: 2.5 * 10); x += 2.5 }
+    }
+    two.scene.setEnabled(true)
+    for _ in 0..<90 { two.step(dt: 1.0 / 60) }
+    check(two.sceneArea === a1 && !a1.surfaces.isEmpty && a2.surfaces.isEmpty, "по умолчанию домик на основном экране")
+    two.setSceneScreen(a2.key)
+    two.setExcavatorScreen(a2.key)
+    for _ in 0..<90 { two.step(dt: 1.0 / 60) }      // домик вырос на новом месте
+    check(two.sceneArea === a2 && a1.surfaces.isEmpty && !a2.surfaces.isEmpty,
+          "домик переехал на второй экран, крыша принимает снег там: кромок \(a1.surfaces.count) / \(a2.surfaces.count)")
+    var p: [PointVertex] = [], t1: [TriVertex] = [], t2: [TriVertex] = []
+    _ = two.buildFrame(for: a1, points: &p, tris: &t1)
+    _ = two.buildFrame(for: a2, points: &p, tris: &t2)
+    check(t2.count > t1.count + 200, "рисуется только на втором: треугольников \(t1.count) / \(t2.count)")
+    // Человечек копает у дома на втором экране.
+    let houseX = Float(b2.minX) + 60
+    let snow2 = a2.ground.height(at: houseX + 40 - Float(b2.minX))
+    two.scene.visitSoon()
+    var f = 0, out = false
+    repeat {
+        two.step(dt: 1.0 / 60); f += 1
+        if two.scene.manPhase != "inside" { out = true }
+    } while !(out && two.scene.manPhase == "inside") && f < 60 * 40
+    let dug = (Int(houseX)...Int(houseX) + 80).map { a2.ground.height(at: Float($0) - Float(b2.minX)) }.min() ?? 99
+    check(out && dug < snow2 - 1, "человечек вышел и копал на втором экране: сугроб \(String(format: "%.1f", snow2)) → \(String(format: "%.1f", dug))")
+    // Экскаватор убирает второй экран, основной не трогает.
+    let g1 = a1.ground.total, g2 = a2.ground.total
+    two.excavator.setEnabled(true)
+    var xs: [Float] = []
+    f = 0
+    repeat {
+        two.step(dt: 1.0 / 60); f += 1
+        if two.excavator.phaseName == "collecting" { xs.append(two.excavator.workX) }
+    } while two.excavator.phaseName != "resting" && f < 60 * 40
+    let inside2 = !xs.isEmpty && xs.allSatisfy { $0 > Float(b2.minX) && $0 < Float(b2.maxX) }
+    check(inside2 && a2.ground.total < g2 - 500 && abs(a1.ground.total - g1) < 1,
+          "экскаватор работал на втором: x \(Int(xs.min() ?? 0))…\(Int(xs.max() ?? 0)), сугроб \(Int(g2)) → \(Int(a2.ground.total)), на основном без изменений")
+    // Второй экран отключили — всё на основном; вернули — назад.
+    two.excavator.comeBackNow()
+    for _ in 0..<30 { two.step(dt: 1.0 / 60) }
+    two.setScreens([(1, b1)])
+    for _ in 0..<90 { two.step(dt: 1.0 / 60) }      // домик заново вырастает ~1 с
+    check(two.sceneArea === two.areas[0] && !two.areas[0].surfaces.isEmpty && two.excavator.bounds.maxX == Float(W)
+          && two.excavator.workX > Float(W) - 200 && two.excavator.workX < Float(W) + 100,
+          "второй экран отключили — домик и экскаватор на основном (x=\(Int(two.excavator.workX)), \(two.excavator.phaseName))")
+    two.setScreens([(1, b1), (2, b2)])
+    for _ in 0..<30 { two.step(dt: 1.0 / 60) }
+    check(two.sceneArea?.key == a2.key && two.excavatorArea?.key == a2.key && two.excavator.bounds.minX == Float(W),
+          "вернули — оба снова на втором")
+    two.setSceneScreen(a1.key)
+    for _ in 0..<5 { two.step(dt: 1.0 / 60) }
+    check(two.sceneArea === two.areas[0] && two.excavatorArea === two.areas[1], "домик и экскаватор — на разных экранах")
+    Settings.shared.paused = false
+}
+
 print(failures == 0 ? "Все проверки прошли" : "Провалено проверок: \(failures)")
 exit(failures == 0 ? 0 : 1)

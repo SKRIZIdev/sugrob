@@ -35,6 +35,13 @@ enum Geo {
     static func displayID(_ s: NSScreen) -> CGDirectDisplayID {
         (s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
     }
+
+    /// Постоянный ключ дисплея — UUID: номер дисплея может смениться после переподключения или
+    /// перезагрузки, а UUID у монитора тот же. Для несуществующего номера (проверки) — «id:N».
+    static func screenKey(_ id: CGDirectDisplayID) -> String {
+        guard let u = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue() else { return "id:\(id)" }
+        return CFUUIDCreateString(nil, u) as String
+    }
 }
 
 // MARK: - Настройки
@@ -159,6 +166,16 @@ final class Settings {
     var houseSize: Int {
         get { min(max(d.integer(forKey: "houseSize"), 0), 2) }
         set { d.set(newValue, forKey: "houseSize") }
+    }
+    /// На каком экране домик и экскаватор: ключ дисплея (`Geo.screenKey`), пусто — основной экран.
+    /// Отключённый экран не забывается: пока его нет, всё живёт на основном, вернётся — переедет назад.
+    var houseScreen: String {
+        get { d.string(forKey: "houseScreen") ?? "" }
+        set { d.set(newValue, forKey: "houseScreen") }
+    }
+    var excavatorScreen: String {
+        get { d.string(forKey: "excavatorScreen") ?? "" }
+        set { d.set(newValue, forKey: "excavatorScreen") }
     }
     static let houseScales: [Float] = [0.6, 0.8, 1.0]
     static let houseSizeTitles = ["Маленький", "Средний", "Большой"]

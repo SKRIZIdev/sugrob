@@ -77,6 +77,17 @@ final class Excavator {
 
     /// Въехать прямо сейчас (для проверок).
     func comeBackNow() { if phase == .resting { restFor = 0 } }
+
+    /// Экран сменился (границы уже новые): посреди приезда он заезжает справа на новом экране с
+    /// пустым ковшом; отдыхающий приедет туда сам по расписанию.
+    func relocate() {
+        guard phase != .gone, phase != .resting else { return }
+        load = 0; spilled = 0
+        guard enabled else { go(.gone); return }
+        x = bounds.maxX + half + 30
+        dir = -1
+        startVisit()
+    }
     /// Где он сейчас убирает (для проверок).
     var workX: Float { x }
 
