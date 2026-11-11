@@ -425,6 +425,7 @@ func groundAt(_ sx: Float) -> Float { world.areas[0].ground.height(at: o.x + sx 
 for sx in stride(from: Float(60), to: 140, by: 2) { world.areas[0].ground.deposit(at: o.x + sx * k, area: 30) }
 let snowBefore = (95...110).map { groundAt(Float($0)) }.reduce(0, +)
 Settings.shared.paused = true
+world.areas[0].flakes.removeAll()      // летящий снег засыпал бы ямку и путал счёт
 world.scene.visitSoon()
 var seen: [String] = []
 var frames = 0
@@ -443,6 +444,24 @@ check(seen == ["opening", "walkOut", "wave", "dig", "walkBack", "entering", "clo
       "человечек прошёл весь путь: \(seen.joined(separator: " → ")) за \(String(format: "%.1f", Float(frames) / 60)) с")
 check(snowAfter < snowBefore * 0.75, "расчистил сугроб у дома: \(Int(snowBefore)) → \(Int(snowAfter))")
 Settings.shared.paused = false
+
+// Экскаватор при пустом сугробе (как сразу после запуска): раньше зацикливался и ронял приложение.
+print("Экскаватор на пустом сугробе:")
+do {
+    let empty = SnowWorld()
+    empty.setScreens([(1, CGRect(x: 0, y: 0, width: W, height: H))])
+    Settings.shared.paused = true
+    empty.excavator.setEnabled(true)
+    var phases: [String] = []
+    for _ in 0..<(60 * 12) {
+        empty.step(dt: 1.0 / 60)
+        let ph = empty.excavator.phaseName
+        if phases.last != ph { phases.append(ph) }
+    }
+    check(phases.contains("leaving") && phases.last == "resting",
+          "снега нет — въехал, развернулся и уехал отдыхать: \(phases.joined(separator: " → "))")
+    Settings.shared.paused = false
+}
 
 // Экскаватор: въезжает справа, сгребает сугроб в кучу фиксированного размера, высыпает за правый край, уезжает.
 print("Экскаватор:")

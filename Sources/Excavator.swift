@@ -228,21 +228,34 @@ final class Excavator {
     }
 
     private func headToSpot() {
-        // На новое место — только если до конца приезда ещё есть хотя бы ~6 с, иначе домой.
-        guard workLeft > 0, clock - visitStart < visitCap - 6, let s = pickSpot() else { finish(); return }
+        // На новое место — только если до конца приезда ещё есть хотя бы ~6 с и где-то есть снег;
+        // иначе отвезти груз (если есть) и уехать. Сюда же — пустой сугроб сразу после запуска.
+        guard workLeft > 0, clock - visitStart < visitCap - 6, let s = pickSpot() else { goHome(); return }
         spot = s
         let want: Float = s < x ? -1 : 1
         if want != dir { nextDir = want; afterTurn = .transit; go(.turning) } else { go(.transit) }
     }
 
-    /// Закончить рейс: есть груз — к правому краю высыпать; нет — уехать (или, если время есть, на новое место).
+    /// Закончить рейс: есть груз — к правому краю высыпать; нет — на новое место (если есть время и снег).
     private func finish(dumpOnly: Bool = false) {
         if load > 1 {
             if dir > 0 { go(.carrying) } else { nextDir = 1; afterTurn = .carrying; go(.turning) }
-        } else if workLeft > 0 && !dumpOnly && clock - visitStart < visitCap - 6 {
-            headToSpot()
+        } else if !dumpOnly {
+            headToSpot()                      // сам решит: новое место или домой
         } else {
-            if dir > 0 { go(.leaving) } else { nextDir = 1; afterTurn = .leaving; go(.turning) }
+            goHome()
+        }
+    }
+
+    /// Груз — к правому краю, без груза — уехать за край. Никуда больше не перенаправляет,
+    /// поэтому headToSpot/finish не зацикливаются, даже когда снега нет вовсе.
+    private func goHome() {
+        if load > 1 {
+            if dir > 0 { go(.carrying) } else { nextDir = 1; afterTurn = .carrying; go(.turning) }
+        } else if dir > 0 {
+            go(.leaving)
+        } else {
+            nextDir = 1; afterTurn = .leaving; go(.turning)
         }
     }
 
